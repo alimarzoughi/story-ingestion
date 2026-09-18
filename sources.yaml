@@ -1,0 +1,741 @@
+# One entry per FEED. An outlet may have several section feeds.
+# leaning: LEFT | LEAN_LEFT | CENTER | LEAN_RIGHT | RIGHT   (outlet-level rating; AllSides/Ad Fontes style)
+# verified: set to true once `python -m pipeline.cli verify-feeds` passes for the feed.
+# Feeds marked verified: false are best-effort URLs and MUST be checked in Phase 0.
+
+# ---------------------------------------------------------------- LEFT
+- id: huffpost-politics
+  outlet: HuffPost
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.huffpost.com/section/politics/feed
+  homepage: https://www.huffpost.com
+  verified: true   # audit 2026-09-17
+  notes: audit #2 - 406 with a browser Accept header; feeds now request application/rss+xml (fixed)
+
+- id: vox-politics
+  outlet: Vox
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.vox.com/rss/politics/index.xml
+  homepage: https://www.vox.com
+  verified: true   # audit 2026-09-17
+
+- id: msnbc-latest
+  outlet: MSNBC
+  leaning: LEFT
+  section: latest
+  feed_url: https://www.msnbc.com/feeds/latest
+  alt_feed_urls:
+    - https://www.msnbc.com/feeds/rss/latest
+    - https://feeds.nbcnews.com/msnbc/public/news
+  homepage: https://www.msnbc.com
+  verified: false
+  notes: audit #2 - every candidate URL returns HTML, not a feed. Disabled until a real feed URL is found.
+  enabled: false
+
+- id: daily-beast-politics
+  outlet: The Daily Beast
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.thedailybeast.com/arc/outboundfeeds/rss/
+  alt_feed_urls:
+    - https://feeds.thedailybeast.com/rss/articles
+    - https://www.thedailybeast.com/arc/outboundfeeds/rss/
+  homepage: https://www.thedailybeast.com
+  verified: true   # audit 2026-09-17 (#2)
+  notes: audit #2 - works via /arc/outboundfeeds/rss/ (25 entries, all fresh)
+
+# ---------------------------------------------------------------- LEAN LEFT
+- id: guardian-us-politics
+  outlet: The Guardian
+  leaning: LEAN_LEFT
+  section: us-politics
+  feed_url: https://www.theguardian.com/us-news/us-politics/rss
+  homepage: https://www.theguardian.com/us
+  verified: true   # audit 2026-09-17
+
+- id: cnn-politics
+  outlet: CNN
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: http://rss.cnn.com/rss/cnn_allpolitics.rss
+  homepage: https://www.cnn.com
+  verified: true   # audit 2026-09-17
+
+- id: npr-politics
+  outlet: NPR
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: https://feeds.npr.org/1014/rss.xml
+  homepage: https://www.npr.org
+  verified: true   # audit 2026-09-17
+
+- id: wapo-politics
+  outlet: The Washington Post
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: https://feeds.washingtonpost.com/rss/politics
+  homepage: https://www.washingtonpost.com
+  verified: true
+  notes: audit #3 (curl_cffi) - 2/3 bodies (metered paywall); enabled, expect some skipped rows
+  enabled: true
+
+# ---------------------------------------------------------------- CENTER
+- id: the-hill-news
+  outlet: The Hill
+  leaning: CENTER
+  section: news
+  feed_url: https://thehill.com/homenews/feed/
+  homepage: https://thehill.com
+  verified: true
+  notes: audit #3 (curl_cffi) - passes 3/3; ~175 entries/day, high volume
+  enabled: true
+
+- id: bbc-us-canada
+  outlet: BBC News
+  leaning: CENTER
+  section: us-canada
+  feed_url: https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml
+  homepage: https://www.bbc.com/news
+  verified: true   # audit 2026-09-17
+
+- id: axios-all
+  outlet: Axios
+  leaning: CENTER
+  section: all
+  feed_url: https://api.axios.com/feed/
+  homepage: https://www.axios.com
+  verified: true
+  notes: audit #3 (curl_cffi) - passes 3/3; 100-entry firehose, ~50 fresh/3d
+  enabled: true
+
+# AP and Reuters have no public RSS (Reuters discontinued theirs in 2020).
+# If either becomes available, add it here as CENTER.
+
+# ---------------------------------------------------------------- LEAN RIGHT
+- id: nypost-politics
+  outlet: New York Post
+  leaning: LEAN_RIGHT
+  section: politics
+  feed_url: https://nypost.com/politics/feed/
+  homepage: https://nypost.com
+  verified: true   # audit 2026-09-17
+
+- id: washington-examiner-politics
+  outlet: Washington Examiner
+  leaning: LEAN_RIGHT
+  section: politics
+  feed_url: https://www.washingtonexaminer.com/section/politics/feed/
+  homepage: https://www.washingtonexaminer.com
+  verified: true   # audit 2026-09-17
+  notes: audit #1/#2 - passes but thin (median 532 chars) and only ~1 fresh entry; low yield
+
+- id: wsj-opinion
+  outlet: The Wall Street Journal
+  leaning: LEAN_RIGHT
+  section: opinion
+  feed_url: https://feeds.content.dowjones.io/public/rss/RSSOpinion
+  homepage: https://www.wsj.com
+  verified: true
+  enabled: true
+  notes: audit #3 (curl_cffi) - passes 3/3 despite paywall; watch for regressions
+
+- id: realclearpolitics
+  outlet: RealClearPolitics
+  leaning: LEAN_RIGHT
+  section: all
+  feed_url: https://www.realclearpolitics.com/index.xml
+  homepage: https://www.realclearpolitics.com
+  verified: false
+  notes: audit #2 - article pages 403 (aggregator, off-site links). Disabled.
+  enabled: false
+
+- id: washington-times-politics
+  outlet: The Washington Times
+  leaning: LEAN_RIGHT
+  section: politics
+  feed_url: https://www.washingtontimes.com/rss/headlines/news/politics/
+  homepage: https://www.washingtontimes.com
+  verified: true
+  notes: audit #3 (curl_cffi) - passes 3/3
+  enabled: true
+
+# ---------------------------------------------------------------- RIGHT
+- id: fox-news-politics
+  outlet: Fox News
+  leaning: RIGHT
+  section: politics
+  feed_url: https://moxie.foxnews.com/google-publisher/politics.xml
+  homepage: https://www.foxnews.com
+  verified: true      # 12 items, link + description present (checked 2026-09-17)
+
+- id: fox-news-us
+  outlet: Fox News
+  leaning: RIGHT
+  section: us
+  feed_url: https://moxie.foxnews.com/google-publisher/us.xml
+  homepage: https://www.foxnews.com
+  verified: true   # audit 2026-09-17
+
+- id: fox-news-world
+  outlet: Fox News
+  leaning: RIGHT
+  section: world
+  feed_url: https://moxie.foxnews.com/google-publisher/world.xml
+  homepage: https://www.foxnews.com
+  verified: true   # audit 2026-09-17
+
+- id: daily-caller-politics
+  outlet: The Daily Caller
+  leaning: RIGHT
+  section: politics
+  feed_url: https://dailycaller.com/feed/
+  alt_feed_urls:
+    - https://feeds.feedburner.com/dailycaller
+    - https://dailycaller.com/section/politics/feed
+  homepage: https://dailycaller.com
+  verified: true   # audit 2026-09-17 (#2)
+  notes: audit #2 - /feed/ works; body 2/3
+
+- id: federalist
+  outlet: The Federalist
+  leaning: RIGHT
+  section: all
+  feed_url: https://thefederalist.com/feed/
+  homepage: https://thefederalist.com
+  verified: true   # audit 2026-09-17
+
+- id: national-review
+  outlet: National Review
+  leaning: RIGHT
+  section: all
+  feed_url: https://www.nationalreview.com/feed/
+  homepage: https://www.nationalreview.com
+  verified: false
+  notes: audit #2 - page fetch OK but body empty even with recall + <p> fallback (JS-rendered/paywall). Disabled.
+  enabled: false
+
+# ---------------------------------------------------------------- CANDIDATES ADDED AFTER AUDIT 1 (all unverified)
+- id: free-beacon
+  outlet: Washington Free Beacon
+  leaning: RIGHT
+  section: all
+  feed_url: https://freebeacon.com/feed/
+  homepage: https://freebeacon.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: the-blaze
+  outlet: The Blaze
+  leaning: RIGHT
+  section: news
+  feed_url: https://www.theblaze.com/feeds/feed.rss
+  alt_feed_urls:
+    - https://www.theblaze.com/rss
+  homepage: https://www.theblaze.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: newsmax-politics
+  outlet: Newsmax
+  leaning: RIGHT
+  section: politics
+  feed_url: https://www.newsmax.com/rss/Politics/1/
+  homepage: https://www.newsmax.com
+  verified: false
+  enabled: false
+  notes: audit #3 - feed parses now but body 0/3; disabled
+
+- id: breitbart-politics
+  outlet: Breitbart
+  leaning: RIGHT
+  section: politics
+  feed_url: https://feeds.feedburner.com/breitbart
+  alt_feed_urls:
+    - https://www.breitbart.com/politics/feed/
+  homepage: https://www.breitbart.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: daily-wire
+  outlet: The Daily Wire
+  leaning: RIGHT
+  section: news
+  feed_url: https://www.dailywire.com/feeds/rss.xml
+  homepage: https://www.dailywire.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: townhall
+  outlet: Townhall
+  leaning: RIGHT
+  section: all
+  feed_url: https://townhall.com/feed/
+  alt_feed_urls:
+    - https://townhall.com/feed/
+  homepage: https://townhall.com
+  verified: true   # audit 2026-09-17 (#2)
+  notes: audit #2 - /feed/ works (50 entries)
+
+- id: mother-jones-politics
+  outlet: Mother Jones
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.motherjones.com/politics/feed/
+  alt_feed_urls:
+    - https://www.motherjones.com/feed/
+  homepage: https://www.motherjones.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: slate-news
+  outlet: Slate
+  leaning: LEFT
+  section: news-and-politics
+  feed_url: https://slate.com/feeds/news-and-politics.rss
+  alt_feed_urls:
+    - https://slate.com/feeds/all.rss
+  homepage: https://slate.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: new-republic
+  outlet: The New Republic
+  leaning: LEFT
+  section: all
+  feed_url: https://newrepublic.com/rss.xml
+  homepage: https://newrepublic.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: salon-politics
+  outlet: Salon
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.salon.com/category/politics/feed
+  alt_feed_urls:
+    - https://www.salon.com/feed/
+  homepage: https://www.salon.com
+  verified: true   # audit 2026-09-17 (#2)
+  notes: audit #2 - passes, but 0 of 30 entries were <72h old; watch yield
+
+- id: the-nation
+  outlet: The Nation
+  leaning: LEFT
+  section: politics
+  feed_url: https://www.thenation.com/subject/politics/feed/
+  alt_feed_urls:
+    - https://www.thenation.com/feed/?post_type=article
+  homepage: https://www.thenation.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: abc-politics
+  outlet: ABC News
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: https://abcnews.go.com/abcnews/politicsheadlines
+  homepage: https://abcnews.go.com
+  verified: true   # audit 2026-09-17 (#2)
+  notes: audit #2 - passes; 2/3 sampled pages were AP wire copies (expected for ABC)
+
+- id: cbs-politics
+  outlet: CBS News
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: https://www.cbsnews.com/latest/rss/politics
+  homepage: https://www.cbsnews.com
+  verified: true   # audit 2026-09-17 (#2)
+
+- id: pbs-politics
+  outlet: PBS NewsHour
+  leaning: CENTER
+  section: politics
+  feed_url: https://www.pbs.org/newshour/feeds/rss/politics
+  alt_feed_urls:
+    - https://www.pbs.org/newshour/feeds/rss/headlines
+  homepage: https://www.pbs.org/newshour
+  verified: true
+  enabled: true
+  notes: audit #3 (curl_cffi) - passes 2/3
+
+- id: usa-today-politics
+  outlet: USA Today
+  leaning: CENTER
+  section: politics
+  feed_url: https://rssfeeds.usatoday.com/usatodaycomwashington-topstories
+  alt_feed_urls:
+    - https://rssfeeds.usatoday.com/UsatodaycomWashington-TopStories
+  homepage: https://www.usatoday.com
+  verified: false
+  enabled: false
+  notes: audit #2 - URLs return HTML, not a feed. Disabled.
+
+# ---------------------------------------------------------------- NON-POLITICS SECTION FEEDS (added after scope check; unverified)
+# Culture, entertainment, business, tech, health, science. Pairing is category-agnostic; these feeds
+# are what make non-political same-topic pairs possible. Section URLs are best-effort — run verify-feeds.
+
+- id: vox-culture
+  outlet: Vox
+  leaning: LEFT
+  section: culture
+  feed_url: https://www.vox.com/rss/culture/index.xml
+  homepage: https://www.vox.com
+  verified: true
+  notes: audit #3 - passes; 0 fresh of 10 (low-volume section)
+
+- id: vox-technology
+  outlet: Vox
+  leaning: LEFT
+  section: technology
+  feed_url: https://www.vox.com/rss/technology/index.xml
+  homepage: https://www.vox.com
+  verified: true
+- id: vox-all
+  outlet: Vox
+  leaning: LEFT
+  section: all
+  feed_url: https://www.vox.com/rss/index.xml
+  homepage: https://www.vox.com
+  verified: true
+  notes: firehose (~10-15/day for Vox, so cheap); covers science, health, money, explainers
+
+- id: huffpost-entertainment
+  outlet: HuffPost
+  leaning: LEFT
+  section: entertainment
+  feed_url: https://www.huffpost.com/section/entertainment/feed
+  homepage: https://www.huffpost.com
+  verified: true
+- id: huffpost-life
+  outlet: HuffPost
+  leaning: LEFT
+  section: life
+  feed_url: https://www.huffpost.com/section/life/feed
+  homepage: https://www.huffpost.com
+  verified: true
+- id: huffpost-us-news
+  outlet: HuffPost
+  leaning: LEFT
+  section: us-news
+  feed_url: https://www.huffpost.com/section/us-news/feed
+  homepage: https://www.huffpost.com
+  verified: true
+
+- id: slate-culture
+  outlet: Slate
+  leaning: LEFT
+  section: culture
+  feed_url: https://slate.com/feeds/culture.rss
+  homepage: https://slate.com
+  verified: true
+- id: slate-technology
+  outlet: Slate
+  leaning: LEFT
+  section: technology
+  feed_url: https://slate.com/feeds/technology.rss
+  homepage: https://slate.com
+  verified: true
+- id: salon-culture
+  outlet: Salon
+  leaning: LEFT
+  section: culture
+  feed_url: https://www.salon.com/category/culture/feed
+  homepage: https://www.salon.com
+  verified: true
+- id: daily-beast-entertainment
+  outlet: The Daily Beast
+  leaning: LEFT
+  section: entertainment
+  feed_url: https://www.thedailybeast.com/arc/outboundfeeds/rss/category/entertainment/
+  alt_feed_urls:
+    - https://www.thedailybeast.com/arc/outboundfeeds/rss/section/obsessed/
+  homepage: https://www.thedailybeast.com
+  verified: false
+  enabled: false
+  notes: audit #3 - both URLs return XML with no entries; disabled
+
+- id: guardian-us-culture
+  outlet: The Guardian
+  leaning: LEAN_LEFT
+  section: culture
+  feed_url: https://www.theguardian.com/us/culture/rss
+  homepage: https://www.theguardian.com/us
+  verified: true
+- id: guardian-us-business
+  outlet: The Guardian
+  leaning: LEAN_LEFT
+  section: business
+  feed_url: https://www.theguardian.com/us/business/rss
+  homepage: https://www.theguardian.com/us
+  verified: true
+- id: guardian-us-technology
+  outlet: The Guardian
+  leaning: LEAN_LEFT
+  section: technology
+  feed_url: https://www.theguardian.com/us/technology/rss
+  homepage: https://www.theguardian.com/us
+  verified: true
+- id: guardian-us-news
+  outlet: The Guardian
+  leaning: LEAN_LEFT
+  section: us-news
+  feed_url: https://www.theguardian.com/us-news/rss
+  homepage: https://www.theguardian.com/us
+  verified: true
+- id: cnn-entertainment
+  outlet: CNN
+  leaning: LEAN_LEFT
+  section: entertainment
+  feed_url: http://rss.cnn.com/rss/cnn_showbiz.rss
+  homepage: https://www.cnn.com
+  verified: true
+  notes: audit #3 - passes; 0 fresh of 30 (stale feed?) watch yield
+
+- id: cnn-us
+  outlet: CNN
+  leaning: LEAN_LEFT
+  section: us
+  feed_url: http://rss.cnn.com/rss/cnn_us.rss
+  homepage: https://www.cnn.com
+  verified: true
+- id: cnn-tech
+  outlet: CNN
+  leaning: LEAN_LEFT
+  section: technology
+  feed_url: http://rss.cnn.com/rss/cnn_tech.rss
+  homepage: https://www.cnn.com
+  verified: true
+- id: cnn-health
+  outlet: CNN
+  leaning: LEAN_LEFT
+  section: health
+  feed_url: http://rss.cnn.com/rss/cnn_health.rss
+  homepage: https://www.cnn.com
+  verified: true
+- id: npr-national
+  outlet: NPR
+  leaning: LEAN_LEFT
+  section: national
+  feed_url: https://feeds.npr.org/1003/rss.xml
+  homepage: https://www.npr.org
+  verified: true
+- id: npr-culture
+  outlet: NPR
+  leaning: LEAN_LEFT
+  section: culture
+  feed_url: https://feeds.npr.org/1008/rss.xml
+  homepage: https://www.npr.org
+  verified: true
+- id: npr-business
+  outlet: NPR
+  leaning: LEAN_LEFT
+  section: business
+  feed_url: https://feeds.npr.org/1006/rss.xml
+  homepage: https://www.npr.org
+  verified: true
+  notes: audit #3 - passes; body 2/3
+
+- id: npr-health
+  outlet: NPR
+  leaning: LEAN_LEFT
+  section: health
+  feed_url: https://feeds.npr.org/1128/rss.xml
+  homepage: https://www.npr.org
+  verified: true
+- id: abc-entertainment
+  outlet: ABC News
+  leaning: LEAN_LEFT
+  section: entertainment
+  feed_url: https://abcnews.go.com/abcnews/entertainmentheadlines
+  homepage: https://abcnews.go.com
+  verified: true
+  notes: audit #3 - passes; 2/3 wire copies
+
+- id: abc-us
+  outlet: ABC News
+  leaning: LEAN_LEFT
+  section: us
+  feed_url: https://abcnews.go.com/abcnews/usheadlines
+  homepage: https://abcnews.go.com
+  verified: true
+  notes: audit #3 - passes but 3/3 sampled were AP wire copies; contributes little to pairs
+
+- id: cbs-entertainment
+  outlet: CBS News
+  leaning: LEAN_LEFT
+  section: entertainment
+  feed_url: https://www.cbsnews.com/latest/rss/entertainment
+  homepage: https://www.cbsnews.com
+  verified: false
+  enabled: false
+  notes: audit #3 - body 0/3 (JS-rendered); disabled
+
+- id: cbs-us
+  outlet: CBS News
+  leaning: LEAN_LEFT
+  section: us
+  feed_url: https://www.cbsnews.com/latest/rss/us
+  homepage: https://www.cbsnews.com
+  verified: true
+
+- id: bbc-entertainment
+  outlet: BBC News
+  leaning: CENTER
+  section: entertainment
+  feed_url: https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml
+  homepage: https://www.bbc.com/news
+  verified: true
+- id: bbc-technology
+  outlet: BBC News
+  leaning: CENTER
+  section: technology
+  feed_url: https://feeds.bbci.co.uk/news/technology/rss.xml
+  homepage: https://www.bbc.com/news
+  verified: true
+- id: bbc-business
+  outlet: BBC News
+  leaning: CENTER
+  section: business
+  feed_url: https://feeds.bbci.co.uk/news/business/rss.xml
+  homepage: https://www.bbc.com/news
+  verified: true
+
+- id: nypost-entertainment
+  outlet: New York Post
+  leaning: LEAN_RIGHT
+  section: entertainment
+  feed_url: https://nypost.com/entertainment/feed/
+  homepage: https://nypost.com
+  verified: true
+- id: nypost-business
+  outlet: New York Post
+  leaning: LEAN_RIGHT
+  section: business
+  feed_url: https://nypost.com/business/feed/
+  homepage: https://nypost.com
+  verified: true
+- id: nypost-us-news
+  outlet: New York Post
+  leaning: LEAN_RIGHT
+  section: us-news
+  feed_url: https://nypost.com/us-news/feed/
+  homepage: https://nypost.com
+  verified: true
+- id: nypost-tech
+  outlet: New York Post
+  leaning: LEAN_RIGHT
+  section: tech
+  feed_url: https://nypost.com/tech/feed/
+  homepage: https://nypost.com
+  verified: true
+- id: page-six
+  outlet: Page Six
+  leaning: LEAN_RIGHT
+  section: celebrity
+  feed_url: https://pagesix.com/feed/
+  homepage: https://pagesix.com
+  verified: true
+  notes: NY Post's celebrity brand
+
+- id: fox-news-entertainment
+  outlet: Fox News
+  leaning: RIGHT
+  section: entertainment
+  feed_url: https://moxie.foxnews.com/google-publisher/entertainment.xml
+  homepage: https://www.foxnews.com
+  verified: true
+- id: fox-news-health
+  outlet: Fox News
+  leaning: RIGHT
+  section: health
+  feed_url: https://moxie.foxnews.com/google-publisher/health.xml
+  homepage: https://www.foxnews.com
+  verified: true
+- id: fox-news-science
+  outlet: Fox News
+  leaning: RIGHT
+  section: science
+  feed_url: https://moxie.foxnews.com/google-publisher/science.xml
+  homepage: https://www.foxnews.com
+  verified: true
+  notes: audit #3 - passes; 0 fresh of 25
+
+- id: fox-news-tech
+  outlet: Fox News
+  leaning: RIGHT
+  section: tech
+  feed_url: https://moxie.foxnews.com/google-publisher/tech.xml
+  homepage: https://www.foxnews.com
+  verified: true
+- id: fox-news-lifestyle
+  outlet: Fox News
+  leaning: RIGHT
+  section: lifestyle
+  feed_url: https://moxie.foxnews.com/google-publisher/lifestyle.xml
+  homepage: https://www.foxnews.com
+  verified: false
+  enabled: false
+  notes: audit #3 - body 1/3 (listicles/galleries); disabled
+
+- id: fox-business
+  outlet: Fox Business
+  leaning: RIGHT
+  section: business
+  feed_url: https://moxie.foxbusiness.com/google-publisher/latest.xml
+  homepage: https://www.foxbusiness.com
+  verified: true
+  notes: audit #3 - passes; 2/3 wire copies
+
+- id: daily-wire-entertainment
+  outlet: The Daily Wire
+  leaning: RIGHT
+  section: entertainment
+  feed_url: https://www.dailywire.com/feeds/rss.xml?category=entertainment
+  homepage: https://www.dailywire.com
+  verified: true
+  notes: audit #3 - 50 entries, same count as daily-wire: probably the same feed; canonical-URL dedupe makes it harmless
+- id: federalist-culture
+  outlet: The Federalist
+  leaning: RIGHT
+  section: culture
+  feed_url: https://thefederalist.com/category/culture/feed/
+  homepage: https://thefederalist.com
+  verified: true
+- id: breitbart-entertainment
+  outlet: Breitbart
+  leaning: RIGHT
+  section: entertainment
+  feed_url: https://www.breitbart.com/entertainment/feed/
+  homepage: https://www.breitbart.com
+  verified: true
+  notes: audit #3 - 49 entries like breitbart-politics: possibly the same feed; dedupe handles it
+
+- id: breitbart-tech
+  outlet: Breitbart
+  leaning: RIGHT
+  section: tech
+  feed_url: https://www.breitbart.com/tech/feed/
+  homepage: https://www.breitbart.com
+  verified: true
+  notes: audit #3 - 49 entries like breitbart-politics: possibly the same feed; dedupe handles it
+
+- id: blaze-culture
+  outlet: The Blaze
+  leaning: RIGHT
+  section: culture
+  feed_url: https://www.theblaze.com/feeds/culture.rss
+  homepage: https://www.theblaze.com
+  verified: false
+  enabled: false
+  notes: audit #3 - 404; disabled
+
+- id: townhall-culture
+  outlet: Townhall
+  leaning: RIGHT
+  section: culture
+  feed_url: https://townhall.com/culture/feed/
+  homepage: https://townhall.com
+  verified: true
+- id: washington-examiner-all
+  outlet: Washington Examiner
+  leaning: LEAN_RIGHT
+  section: all
+  feed_url: https://www.washingtonexaminer.com/feed/
+  homepage: https://www.washingtonexaminer.com
+  verified: false
+  notes: audit #3 - body 1/3; disabled
+  enabled: false

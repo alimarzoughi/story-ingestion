@@ -1,0 +1,40 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# build
+dist/
+build/
+*.egg-info/
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# tool caches
+.codex-pycache/
+
+# local scratch
+*.log
+local/
+.agents/
+
+# working notes / scraped data
+eval/seed.csv
+
+# private operating docs
+AGENTS.md
+*.sql
