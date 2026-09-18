@@ -110,6 +110,37 @@ def _valid_date(value: Any) -> str | None:
         return None
 
 
+def clean_entities(entities: Any, outlet: str | None = None, limit: int = 8) -> list[str]:
+    """Normalise the LLM's key_entities list.
+
+    Drops self-references to the publishing outlet ("Fox News Digital", "Fox News Poll"),
+    which the model picks up from the page's own furniture. Those are poison for clustering:
+    they are the one entity guaranteed to be shared by every article from that outlet and
+    by no article from any other, so they pull the entity overlap toward same-outlet
+    matches -- the opposite of what cross-outlet pairing needs. Only the article's OWN
+    outlet is filtered; a rival outlet named in the story is a real actor and is kept.
+    """
+    outlet_key = (outlet or "").strip().lower()
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in entities or []:
+        if not isinstance(item, str):
+            continue
+        name = " ".join(item.split())
+        if len(name) < 2:
+            continue
+        low = name.lower()
+        if outlet_key and (low == outlet_key or outlet_key in low):
+            continue
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(name)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def enrichment_to_patch(article: dict, out: dict, settings: Settings, embedding: list[float] | None) -> dict:
     stance = out.get("stance") or {}
     stance_patch = {
@@ -135,7 +166,7 @@ def enrichment_to_patch(article: dict, out: dict, settings: Settings, embedding:
         "article_type": out.get("article_type") if out.get("article_type") in ARTICLE_TYPES else "other",
         "event_summary": (out.get("event_summary") or "").strip() or None,
         "event_date": _valid_date(out.get("event_date")),
-        "key_entities": [e.strip() for e in (out.get("key_entities") or []) if isinstance(e, str) and e.strip()][:8],
+        "key_entities": clean_entities(out.get("key_entities"), article.get("outlet")),
         "leaning_label": (out.get("leaning") or {}).get("label") if (out.get("leaning") or {}).get("label") in LEANINGS else None,
         "leaning_conf": _clamp((out.get("leaning") or {}).get("confidence")),
         "stance": stance_patch,

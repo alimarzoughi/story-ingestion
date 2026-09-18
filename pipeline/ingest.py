@@ -155,11 +155,24 @@ def _entries_from(parsed) -> list[dict[str, Any]]:
 
 def build_row(source: dict, entry: dict, page: dict, html_len: int, max_age_hours: int | None = None) -> dict[str, Any] | None:
     canonical = canonicalize(entry["link"])
-    published = page.get("published_at") or entry.get("published_at")
+    page_published = page.get("published_at")
+    feed_published = entry.get("published_at")
+    published = page_published or feed_published
     if not published:
         return None
-    if max_age_hours and published < datetime.now(timezone.utc) - timedelta(hours=max_age_hours):
-        return {"_stale": True, "published_at": published.isoformat()}
+    date_source = "page" if page_published else "feed"
+    if max_age_hours:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        known = [d for d in (page_published, feed_published) if d]
+        newest = max(known)
+        if newest < cutoff:
+            return {"_stale": True, "published_at": newest.isoformat()}
+        if published < cutoff:
+            # The page date is stale but the feed says this entry is fresh. A page-level
+            # date is often the *original* publication date of a republished or updated
+            # story, so it must not be allowed to silently drop a fresh feed entry.
+            published = newest
+            date_source = "feed_override"
     title = page.get("title") or entry.get("title")
     if not title:
         return None
@@ -188,14 +201,17 @@ def build_row(source: dict, entry: dict, page: dict, html_len: int, max_age_hour
             "wire_hint": page.get("wire_hint"),
             "jsonld_type": page.get("jsonld_type"),
             "html_bytes": html_len,
-            "feed_published_at": entry["published_at"].isoformat() if entry.get("published_at") else None,
+            "feed_published_at": feed_published.isoformat() if feed_published else None,
+            "page_published_at": page_published.isoformat() if page_published else None,
+            "date_source": date_source,
         },
         "is_wire_copy": bool(page.get("wire_hint")),
     }
 
 
 def ingest_source(db: Db | None, fetcher: Fetcher, settings: Settings, source: dict, *, dry_run: bool = False) -> dict[str, Any]:
-    stats = {"source": source["id"], "feed_entries": 0, "fresh": 0, "new": 0, "inserted": 0, "skipped_short": 0, "failed": 0, "errors": []}
+    stats = {"source": source["id"], "feed_entries": 0, "fresh": 0, "new": 0, "inserted": 0, "skipped_short": 0,
+             "stale": 0, "date_override": 0, "failed": 0, "errors": []}
     try:
         entries = parse_feed(fetcher, source["feed_url"], source.get("alt_feed_urls"))
     except Exception as exc:
@@ -241,8 +257,10 @@ def ingest_source(db: Db | None, fetcher: Fetcher, settings: Settings, source: d
                 stats["errors"].append(f"{entry['link']}: missing title or date")
                 continue
             if row.get("_stale"):
-                stats["stale"] = stats.get("stale", 0) + 1
+                stats["stale"] += 1
                 continue
+            if row["evidence"].get("date_source") == "feed_override":
+                stats["date_override"] += 1
             if row["enrichment_status"] == "skipped":
                 stats["skipped_short"] += 1
             rows.append(row)
@@ -283,7 +301,8 @@ def run_ingest(db: Db | None, settings: Settings, sources: list[dict], *, dry_ru
         stats["seconds"] = round(time.time() - started, 1)
         results.append(stats)
         err = f" errors={len(stats['errors'])}" if stats["errors"] else ""
-        print(f"[ingest] {source['id']:<32} feed={stats['feed_entries']:<3} fresh={stats['fresh']:<3} new={stats['new']:<3} inserted={stats['inserted']:<3} short={stats['skipped_short']:<2} failed={stats['failed']:<2} {stats['seconds']}s{err}")
+        extra = f" dateovr={stats['date_override']}" if stats["date_override"] else ""
+        print(f"[ingest] {source['id']:<32} feed={stats['feed_entries']:<3} fresh={stats['fresh']:<3} new={stats['new']:<3} inserted={stats['inserted']:<3} short={stats['skipped_short']:<2} stale={stats['stale']:<3} failed={stats['failed']:<2} {stats['seconds']}s{err}{extra}")
         for e in stats["errors"][:3]:
             print(f"          ! {e[:160]}")
     return results

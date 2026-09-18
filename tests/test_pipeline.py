@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -80,6 +80,33 @@ def test_build_row_marks_short_bodies_skipped():
     assert row["enrichment_status"] == "pending"
     page["text"] = "tiny"
     assert build_row(source, entry, page, 1000)["enrichment_status"] == "skipped"
+
+
+def test_build_row_stale_guard_prefers_the_fresher_of_page_and_feed():
+    """A page-level date is often the ORIGINAL publication date of a republished story.
+    It must not silently drop an entry the feed says is fresh (the CNN zero-insert bug)."""
+    now = datetime.now(timezone.utc)
+    source = {"id": "s", "outlet": "O"}
+    page = extract_page(HTML, "https://www.o.com/x")
+
+    # page date stale, feed date fresh -> keep, using the feed date
+    page_old = {**page, "published_at": now - timedelta(days=30)}
+    entry_fresh = {"link": "https://www.o.com/x", "title": "T", "published_at": now - timedelta(hours=2),
+                   "summary": None, "image_url": None, "author": None}
+    row = build_row(source, entry_fresh, page_old, 1000, max_age_hours=72)
+    assert not row.get("_stale")
+    assert row["evidence"]["date_source"] == "feed_override"
+    assert row["published_at"] == (now - timedelta(hours=2)).isoformat()
+
+    # both stale -> dropped
+    entry_old = {**entry_fresh, "published_at": now - timedelta(days=20)}
+    assert build_row(source, entry_old, page_old, 1000, max_age_hours=72)["_stale"] is True
+
+    # both fresh -> page date wins (more precise than the feed's)
+    page_fresh = {**page, "published_at": now - timedelta(hours=5)}
+    row = build_row(source, entry_fresh, page_fresh, 1000, max_age_hours=72)
+    assert row["evidence"]["date_source"] == "page"
+    assert row["published_at"] == (now - timedelta(hours=5)).isoformat()
 
 
 # ---------------------------------------------------------------- enrich schema
