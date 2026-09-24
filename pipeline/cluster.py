@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -25,17 +26,18 @@ VERIFY_SCHEMA = {
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-23.main-point"
+ASSIGN_RULE = "2026-09-24.main-point"
 
 VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
 
 The article belongs to a candidate story only if the article's MAIN POINT (what its headline and opening are about) is that story's development.
-SAME story: other outlets reporting the development; reactions, statements, criticism or defences of it; analysis and opinion about it; the action simply being carried out (e.g. reporters turned away once a ban takes effect); new details about the same development.
+SAME story: other outlets reporting the development; reactions, statements, criticism or defences of it; analysis and opinion about it, including op-eds arguing for or against it; the action simply being carried out (e.g. reporters turned away once a ban takes effect); new details about the same development. Commentary and reaction pieces (how a speech, ad, poll or decision was received, what critics or supporters said about it) belong to that development's story even when their angle or tone is new.
 DIFFERENT story (a follow-up): the article's main point is a NEW development that grows out of the original, e.g. the banned outlets filing a lawsuit, a court ruling, a retaliation, a resignation, a vote on a response, an investigation opening. This holds even when the article recaps the original development at length.
 Examples: 'Trump bans three outlets' vs 'Outlets sue Trump over the ban' -> DIFFERENT. 'Trump bans three outlets' vs 'Fox hosts criticise the ban' -> SAME. 'Israel strikes Tehran on April 3' vs 'Iran retaliates on April 4' -> DIFFERENT. An opinion column about a Senate vote -> SAME as the vote.
 If a candidate is itself the follow-up development the article is about, choose that candidate.
-If no candidate fits, or you are unsure, answer null. Return only JSON."""
+Split only for a genuinely new development (a new action or event), not for a new angle on the same one.
+If no candidate fits, or you are unsure whether it is the same development, answer null. Return only JSON."""
 
 
 def _parse_ts(value: str) -> datetime:
@@ -136,6 +138,26 @@ def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: l
     return None, out
 
 
+_ABBREVIATIONS = {"rep", "sen", "gov", "gen", "dr", "mr", "mrs", "ms", "st", "jr", "sr", "vs", "no", "lt", "col",
+                  "sgt", "mt", "ft", "u.s", "u.k", "u.n", "d.c", "inc", "corp", "co", "ltd", "jan", "feb", "aug", "sept", "oct", "nov", "dec"}
+
+
+def placeholder_title(text: str, limit: int = 120) -> str:
+    """Title for a new story until the pairs stage writes an LLM title. First sentence, but never cut at an
+    abbreviation ('Rep. Maria Salazar...', 'Colts vs. Jets') -- the old '. ' split produced titles like 'Rep'."""
+    text = " ".join((text or "").split())
+    first = text
+    for match in re.finditer(r"\.\s+(?=[A-Z0-9])", text):
+        word = text[: match.start()].rsplit(" ", 1)[-1].lower()
+        if word in _ABBREVIATIONS or len(word) == 1 or match.start() < 20:
+            continue  # "Rep.", "vs.", an initial like "J.", or too early to be a whole sentence
+        first = text[: match.start()]
+        break
+    if len(first) <= limit:
+        return first
+    return first[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "\u2026"
+
+
 def _normalize(vec: list[float]) -> list[float]:
     norm = math.sqrt(sum(x * x for x in vec)) or 1.0
     return [x / norm for x in vec]
@@ -205,7 +227,7 @@ class Assigner:
 
     def create(self, article: dict, embedding: list[float], scored: list[dict], extra: dict | None = None) -> None:
         side = self.side_of(article)
-        title = (article.get("event_summary") or article["title"]).split(". ")[0][:140]
+        title = placeholder_title(article.get("event_summary") or article["title"])
         story = self.db.insert("stories", {
             "title": title,
             "summary": article.get("event_summary") or article["title"],

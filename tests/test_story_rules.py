@@ -230,3 +230,12 @@ def test_fix_text_backfill_only_touches_rows_that_change():
     assert db.tables["articles_v3"][0]["title"] == "Trump Bans ‘Fake News’" and db.tables["articles_v3"][0]["subheadline"] == "x & y"
     assert db.tables["articles_v3"][1]["title"] == "AT&T earnings beat"
     assert db.tables["stories"][0]["title"] == "Barrasso: ban doesn’t violate Constitution"
+
+
+def test_placeholder_titles_do_not_stop_at_abbreviations():
+    from pipeline.cluster import placeholder_title
+    assert placeholder_title("Rep. Maria Elvira Salazar aired a Miami ad critiquing Trump. It ran Sunday.") == \
+        "Rep. Maria Elvira Salazar aired a Miami ad critiquing Trump"
+    assert placeholder_title("Indianapolis Colts vs. Kansas City Chiefs ended 24-20. Swift attended.").startswith("Indianapolis Colts vs. Kansas")
+    assert placeholder_title("The U.S. and Denmark agreed to military rights in Greenland. Talks continue.").endswith("Greenland")
+    assert len(placeholder_title("word " * 100)) <= 121
