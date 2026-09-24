@@ -255,7 +255,7 @@ def _late_article_db():
 
 
 def test_unsure_follow_up_stays_with_the_story():
-    for relation, confidence in [("follow_up", 0.55), ("unrelated", 0.4), ("same_development", 0.3)]:
+    for relation, confidence in [("follow_up", 0.66), ("follow_up", 0.55), ("unrelated", 0.4), ("same_development", 0.3)]:
         db, leaning, ban_id = _late_article_db()
         llm = FakeLLM(lambda kind, user: {"candidate_id": ban_id, "relation": relation, "confidence": confidence, "reason": "t"})
         stats = run_assign(db, llm, SETTINGS, leaning)
@@ -266,7 +266,7 @@ def test_unsure_follow_up_stays_with_the_story():
 
 def test_confident_follow_up_is_split_off():
     db, leaning, ban_id = _late_article_db()
-    llm = FakeLLM(lambda kind, user: {"candidate_id": ban_id, "relation": "follow_up", "confidence": 0.66, "reason": "t"})
+    llm = FakeLLM(lambda kind, user: {"candidate_id": ban_id, "relation": "follow_up", "confidence": 0.70, "reason": "t"})
     run_assign(db, llm, SETTINGS, leaning)
     townhall = next(a for a in db.tables["articles_v3"] if a["outlet"] == "Townhall")
     assert townhall["story_id"] != ban_id  # opinion cannot create a story: orphaned until its follow-up story exists

@@ -53,7 +53,9 @@ class Settings:
     event_date_max_gap_days: int = 3
     assign_batch: int = 300
     auto_attach_window_hours: int = 12           # later arrivals always go through the verifier (follow-up check)
-    split_min_confidence: float = 0.66           # a strong match is split off only if the verifier is this sure it is new
+    split_min_confidence: float = 0.70           # a strong match is split off only if the verifier is this sure it is new
+                                                 # (chosen 2026-09-25 from the recheck dry run: 0.66->0.70 keeps one borderline
+                                                 # reaction; 0.75 would start keeping clear follow-ups)
     # merge (duplicate stories)
     merge_min_similarity: float = 0.86
     merge_lookback_hours: int = 48
@@ -93,6 +95,6 @@ class Settings:
             verify_threshold=float(_env("VERIFY_THRESHOLD", "0.66")),
             candidate_window_hours=int(_env("CANDIDATE_WINDOW_HOURS", "96")),
             auto_attach_window_hours=int(_env("AUTO_ATTACH_WINDOW_HOURS", "12")),
-            split_min_confidence=float(_env("SPLIT_MIN_CONFIDENCE", "0.66")),
+            split_min_confidence=float(_env("SPLIT_MIN_CONFIDENCE", "0.70")),
             merge_min_similarity=float(_env("MERGE_MIN_SIMILARITY", "0.86")),
         )
