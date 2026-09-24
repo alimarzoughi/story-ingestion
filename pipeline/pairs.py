@@ -17,16 +17,16 @@ TITLE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "story_title": {"type": "string", "description": "Neutral headline for the development, <= 12 words, no outlet voice."},
-        "story_summary": {"type": "string", "description": "One neutral sentence describing the development."},
+        "story_title": {"type": "string", "description": "Neutral headline for the Development text only, <= 12 words, no outlet voice."},
         "headline_contrast": {"type": "string", "description": "One sentence (<= 30 words) stating what the left-side piece foregrounds versus what the right-side piece foregrounds. Refer to them as 'Left' and 'Right'."},
     },
-    "required": ["story_title", "story_summary", "headline_contrast"],
+    "required": ["story_title", "headline_contrast"],
 }
 TITLE_SYSTEM = (
     "You write neutral story titles and one-line framing contrasts for a news comparison app. Be concrete and even-handed. "
-    "The story title and summary must name the ORIGINAL development given under 'Development' (e.g. 'Trump bans three outlets "
-    "from White House'), not reactions to it or later follow-ups. Return only JSON."
+    "The story title must describe ONLY the development stated under 'Development' (e.g. 'Trump bans three outlets from "
+    "White House'). The two pieces are given only for the framing contrast: never put reactions to the development or "
+    "later follow-ups from their headlines into the title. Return only JSON."
 )
 
 # never shown as a side's headline (still counted as story members)
@@ -91,6 +91,21 @@ def score_pair(left: dict, right: dict, current_outlets: set[str] | None = None)
     if current_outlets and not ({left["outlet"], right["outlet"]} & current_outlets):
         score += 0.5
     return round(score, 3), kind, detail
+
+
+def title_and_contrast(llm: LLM, settings: Settings, story: dict, left: dict, right: dict) -> tuple[str | None, str | None]:
+    """(story title, headline contrast). The story's summary is its anchor (the founding article's event summary)
+    and is never rewritten here: a summary written from later pair articles drifts toward follow-ups, and every
+    later attach / recheck / merge decision is measured against it."""
+    user = (
+        f"Development: {story['summary']}\n\n"
+        f"LEFT-side piece ({left['outlet']}): title: {left['title']}\n  framing: {(left.get('stance') or {}).get('framing_summary')}\n"
+        f"RIGHT-side piece ({right['outlet']}): title: {right['title']}\n  framing: {(right.get('stance') or {}).get('framing_summary')}\n"
+    )
+    out = llm.structured(kind="title", model=settings.verify_model, system=TITLE_SYSTEM, user=user,
+                         schema=TITLE_SCHEMA, schema_name="story_title_and_contrast", max_output_tokens=300)
+    title = (out.get("story_title") or "").strip()[:200] or None
+    return title, out.get("headline_contrast")
 
 
 def _ts(value: str) -> datetime:
@@ -158,21 +173,25 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
             better = score >= float(current["divergence_score"]) + 1.0
             if same or not (better or (newer and score >= float(current["divergence_score"]) - 0.5)):
                 stats["kept"] += 1
+                if llm is not None and story.get("title_source") != "llm":
+                    # story was (re)anchored: give it a proper title even though its pair stays
+                    by_id = {m["id"]: m for m in members}
+                    try:
+                        title, _ = title_and_contrast(llm, settings, story, by_id[current["left_article_id"]],
+                                                      by_id[current["right_article_id"]])
+                        if title:
+                            db.update("stories", {"id": f"eq.{story['id']}"}, {"title": title, "title_source": "llm"})
+                            stats["titled"] += 1
+                    except Exception as exc:
+                        print(f"[pairs] title call failed for {story['id']}: {str(exc)[:160]}")
                 continue
 
         contrast, title_patch = None, {}
         if llm is not None:
             try:
-                user = (
-                    f"Development: {story['summary']}\n\n"
-                    f"LEFT-side piece ({left['outlet']}): title: {left['title']}\n  framing: {(left.get('stance') or {}).get('framing_summary')}\n"
-                    f"RIGHT-side piece ({right['outlet']}): title: {right['title']}\n  framing: {(right.get('stance') or {}).get('framing_summary')}\n"
-                )
-                out = llm.structured(kind="title", model=settings.verify_model, system=TITLE_SYSTEM, user=user,
-                                     schema=TITLE_SCHEMA, schema_name="story_title_and_contrast", max_output_tokens=300)
-                contrast = out.get("headline_contrast")
-                if story.get("title_source") != "llm" and out.get("story_title"):
-                    title_patch = {"title": out["story_title"][:200], "summary": out.get("story_summary") or story["summary"], "title_source": "llm"}
+                title, contrast = title_and_contrast(llm, settings, story, left, right)
+                if story.get("title_source") != "llm" and title:
+                    title_patch = {"title": title, "title_source": "llm"}  # never the summary: it is the anchor
                     stats["titled"] += 1
             except Exception as exc:
                 print(f"[pairs] title/contrast call failed for {story['id']}: {str(exc)[:160]}")

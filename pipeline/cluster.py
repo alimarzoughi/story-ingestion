@@ -28,7 +28,7 @@ VERIFY_SCHEMA = {
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-25.same-by-default"
+ASSIGN_RULE = "2026-09-25b.anchored"
 
 VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
@@ -347,12 +347,24 @@ def run_assign(db: Db, llm: LLM | None, settings: Settings, source_leaning: dict
 RECHECK_SELECT = ASSIGN_SELECT + ",story_id,assignment"
 
 
-def recheck_suspects(members: list[dict], story: dict, settings: Settings) -> list[dict]:
-    """Members that the current rule would have sent to the verifier but that were never verified under it."""
+def founding_article(members: list[dict]) -> dict | None:
+    """The article whose development the story is about: the earliest article that created a story
+    (a merged-in story brings its own creator, so take the earliest), else the earliest member with a summary."""
+    with_summary = [m for m in members if m.get("event_summary")]
+    creators = [m for m in with_summary if (m.get("assignment") or {}).get("method") == "create"]
+    pool = creators or with_summary
+    return min(pool, key=lambda m: m["published_at"]) if pool else None
+
+
+def recheck_suspects(members: list[dict], story: dict, settings: Settings, anchor_id: str | None = None) -> list[dict]:
+    """Members that the current rule would have sent to the verifier but that were never verified under it.
+    Only the founding article is exempt: a story absorbed by a merge brings its own creator, which must be checked."""
     out = []
     for m in members:
         assignment = m.get("assignment") or {}
-        if assignment.get("method") == "create" or assignment.get("rule") == ASSIGN_RULE:
+        if assignment.get("rule") == ASSIGN_RULE:
+            continue
+        if m["id"] == anchor_id or (anchor_id is None and assignment.get("method") == "create"):
             continue
         if needs_verification(m, story, settings) is None:
             continue
@@ -370,17 +382,37 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
     from concurrent.futures import ThreadPoolExecutor
 
     stats = {"stories": 0, "suspects": 0, "kept": 0, "detached": 0, "failed": 0}
-    stories = db.select("stories", select="id,title,summary,event_date,first_seen,last_seen,article_count",
+    stats["reanchored"] = 0
+    stories = db.select("stories", select="id,title,summary,title_source,event_date,first_seen,last_seen,article_count",
                         status="eq.open", article_count="gte.2")
     work: list[tuple[dict, dict]] = []
+    reanchored: list[str] = []
     for story in stories:
         members = db.select("articles_v3", select=RECHECK_SELECT, story_id=f"eq.{story['id']}")
-        suspects = recheck_suspects(members, story, settings)
+        founder = founding_article(members)
+        # A summary rewritten from later pair articles can drift to include a follow-up ("...; media sue over
+        # access"), which then makes the follow-up look like the same development. Re-anchor it on the founder.
+        if founder and story.get("title_source") == "llm" and founder["event_summary"] != story.get("summary"):
+            old_title = story["title"]
+            story = {**story, "summary": founder["event_summary"], "title": placeholder_title(founder["event_summary"]),
+                     "title_source": "auto"}
+            stats["reanchored"] += 1
+            if len(reanchored) < 15:
+                reanchored.append(f"  - {old_title[:70]}  ->  {story['title'][:70]}")
+            if not dry_run:
+                db.update("stories", {"id": f"eq.{story['id']}"}, {
+                    "summary": story["summary"], "title": story["title"], "title_source": "auto",
+                    "updated_at": datetime.now(timezone.utc).isoformat()})
+        suspects = recheck_suspects(members, story, settings, anchor_id=founder["id"] if founder else None)
         if suspects:
             stats["stories"] += 1
             work.extend((m, story) for m in suspects)
     work = work[:max_checks]
     stats["suspects"] = len(work)
+    print(f"[recheck] re-anchored {stats['reanchored']} story summaries on their founding article"
+          f"{' (in memory only)' if dry_run else ''}; e.g. old title -> anchored placeholder:")
+    if reanchored:
+        print("\n".join(reanchored))
     print(f"[recheck] {stats['suspects']} articles in {stats['stories']} stories need re-verification under rule {ASSIGN_RULE}")
 
     def check(item: tuple[dict, dict]) -> tuple[dict, dict, dict | None, dict]:

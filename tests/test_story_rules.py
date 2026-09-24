@@ -314,3 +314,65 @@ def test_recheck_refuses_to_write_when_patch_002_is_missing():
     with pytest.raises(SystemExit, match="schema_patch_002.sql"):
         require_patch_002(NoPatchDb())
     require_patch_002(FakeDb())  # patched database: silent no-op
+
+
+# ---------------------------------------------------------------- anchored summaries
+DRIFTED = "President bans several outlets from White House; media sue over access"
+
+
+def _drifted_story_db():
+    db, leaning = _ban_db()
+    ban = db.tables["stories"][0]
+    founder = next(a for a in db.tables["articles_v3"] if a["story_id"] == ban["id"] and a["assignment"]["method"] == "create")
+    ban.update(title=DRIFTED, summary=DRIFTED, title_source="llm", article_count=4)
+    db.insert("articles_v3", [
+        # the absorbed lawsuit story's own creator, carried in by a merge
+        article("NPR", "hp", "CNN, MS NOW and Politico will sue Trump after being barred", [1, 0.03, 0], None,
+                published="2026-09-21T12:00:00+00:00", event_date="2026-09-21", story_id=ban["id"], side="left",
+                assignment={"method": "create", "rule": "2026-09-25.same-by-default"}, assigned_at="t"),
+        article("Daily Wire", "dw", "Waltz says Trump was spot on banning CNN", [1, 0.02, 0], None,
+                published="2026-09-20T12:00:00+00:00", story_id=ban["id"], side="right",
+                assignment={"method": "threshold", "rule": "2026-09-25.same-by-default"}, assigned_at="t"),
+    ])
+
+    def rule(kind, user):
+        story_line = user.split("CANDIDATE STORIES\n")[1]
+        headline = user.split("Headline: ")[1].split("\n")[0]
+        if "sue" in headline and "sue" not in story_line:
+            return {"candidate_id": ban["id"], "relation": "follow_up", "confidence": 0.9, "reason": "t"}
+        return {"candidate_id": ban["id"], "relation": "same_development", "confidence": 0.8, "reason": "t"}
+
+    return db, ban, founder, FakeLLM(rule)
+
+
+def test_founding_article_is_the_earliest_creator():
+    from pipeline.cluster import founding_article
+    db, ban, founder, _ = _drifted_story_db()
+    members = [a for a in db.tables["articles_v3"] if a.get("story_id") == ban["id"]]
+    assert founding_article(members)["id"] == founder["id"]
+
+
+def test_recheck_reanchors_a_drifted_summary_and_splits_the_merged_in_follow_up():
+    db, ban, founder, llm = _drifted_story_db()
+    dry = run_recheck(db, llm, SETTINGS, dry_run=True)
+    assert dry["reanchored"] == 1 and dry["detached"] == 1
+    assert ban["summary"] == DRIFTED  # dry run writes nothing
+    # the verifier saw the founder's summary, not the drifted one that mentions the lawsuit
+    assert all(DRIFTED not in user for _, user in llm.calls)
+
+    stats = run_recheck(db, llm, SETTINGS)
+    assert stats["detached"] == 1 and stats["kept"] == 1
+    assert ban["summary"] == founder["event_summary"] and ban["title_source"] == "auto"
+    sued = next(a for a in db.tables["articles_v3"] if a["title"].startswith("CNN, MS NOW and Politico will sue"))
+    assert sued["story_id"] is None
+
+
+def test_pairs_retitles_an_anchored_story_without_touching_its_summary():
+    db, ban, founder, _ = _drifted_story_db()
+    run_pairs(db, None, SETTINGS)  # build a pair first
+    ban.update(title="placeholder", title_source="auto", summary=founder["event_summary"],
+               updated_at="2099-01-01T00:00:00+00:00")
+    titler = FakeLLM(lambda kind, user: {"story_title": "Trump bans three outlets from White House", "headline_contrast": "c"})
+    stats = run_pairs(db, titler, SETTINGS)
+    assert stats["titled"] == 1 and ban["title"] == "Trump bans three outlets from White House"
+    assert ban["summary"] == founder["event_summary"] and ban["title_source"] == "llm"
