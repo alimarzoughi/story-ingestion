@@ -63,7 +63,9 @@ class FakeDb:
         if name == "close_stale_stories":
             return 0
         if name == "refresh_story_stats":
-            story = next(s for s in self.tables["stories"] if s["id"] == payload["target"])
+            story = next((s for s in self.tables["stories"] if s["id"] == payload["target"]), None)
+            if story is None:
+                return None
             members = [a for a in self.tables["articles_v3"] if a.get("story_id") == story["id"]]
             story.update(article_count=len(members), left_count=sum(a.get("side") == "left" for a in members),
                          right_count=sum(a.get("side") == "right" for a in members))

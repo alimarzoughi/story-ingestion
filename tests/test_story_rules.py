@@ -301,3 +301,16 @@ def test_recheck_keeps_members_unless_confidently_new():
     llm = FakeLLM(lambda kind, user: {"candidate_id": ban["id"], "relation": "follow_up", "confidence": 0.6, "reason": "t"})
     stats = run_recheck(db, llm, SETTINGS)
     assert stats["kept"] == 1 and stats["detached"] == 0
+
+
+def test_recheck_refuses_to_write_when_patch_002_is_missing():
+    import pytest
+    from pipeline.cli import require_patch_002
+
+    class NoPatchDb(FakeDb):
+        def rpc(self, name, payload):
+            raise RuntimeError('POST rpc/refresh_story_stats -> 404: {"code":"PGRST202"}')
+
+    with pytest.raises(SystemExit, match="schema_patch_002.sql"):
+        require_patch_002(NoPatchDb())
+    require_patch_002(FakeDb())  # patched database: silent no-op

@@ -96,10 +96,32 @@ def cmd_pairs(args) -> int:
     return 0
 
 
+_NIL_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+def require_patch_002(db) -> None:
+    """Fail fast, before anything is written, if schema_patch_002.sql has not been applied in Supabase.
+
+    Calls refresh_story_stats on a UUID that matches no story (a no-op). PostgREST answers 404 / PGRST202
+    when the function does not exist.
+    """
+    try:
+        db.rpc("refresh_story_stats", {"target": _NIL_UUID})
+    except RuntimeError as exc:
+        if "PGRST202" in str(exc) or "-> 404" in str(exc):
+            raise SystemExit(
+                "schema_patch_002.sql has not been applied: the database has no refresh_story_stats() function.\n"
+                "Paste story-based-ingestion/schema_patch_002.sql into the Supabase SQL editor and run it, then retry."
+            ) from exc
+        raise
+
+
 def cmd_merge(args) -> int:
     settings = Settings.from_env()
     from .merge import run_merge
-    run_merge(_db(settings), _llm(settings), settings)
+    db = _db(settings)
+    require_patch_002(db)
+    run_merge(db, _llm(settings), settings)
     return 0
 
 
@@ -116,13 +138,15 @@ def cmd_recheck(args) -> int:
     from .merge import run_merge
     from .pairs import run_pairs
     db, llm = _db(settings), _llm(settings)
+    if not args.dry_run:
+        require_patch_002(db)  # never detach articles if the stats/merge functions are missing
     stats = run_recheck(db, llm, settings, dry_run=args.dry_run)
     if args.dry_run:
         print(f"[recheck] dry run finished | {llm.usage_summary()}")
         return 0
-    # detached articles are unassigned again: file them under the current rule, then clean up
-    if stats["detached"]:
-        run_assign(db, llm, settings, _source_leaning(db), limit=max(settings.assign_batch, stats["detached"] + 100))
+    # detached articles are unassigned again: file them under the current rule, then clean up.
+    # Always run: an earlier interrupted recheck may have left detached articles waiting.
+    run_assign(db, llm, settings, _source_leaning(db), limit=max(settings.assign_batch, stats["detached"] + 100))
     run_merge(db, llm, settings)
     run_pairs(db, llm, settings, lookback_hours=24 * 7)
     print(f"[recheck] finished | {llm.usage_summary()}")
