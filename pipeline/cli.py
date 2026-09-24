@@ -140,7 +140,7 @@ def cmd_recheck(args) -> int:
     db, llm = _db(settings), _llm(settings)
     if not args.dry_run:
         require_patch_002(db)  # never detach articles if the stats/merge functions are missing
-    stats = run_recheck(db, llm, settings, dry_run=args.dry_run)
+    stats = run_recheck(db, llm, settings, dry_run=args.dry_run, report_path=args.report)
     if args.dry_run:
         print(f"[recheck] dry run finished | {llm.usage_summary()}")
         return 0
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pairs"); p.add_argument("--lookback-hours", type=int); p.add_argument("--story"); p.set_defaults(fn=cmd_pairs)
     p = sub.add_parser("merge"); p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("fix-text"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_fix_text)
-    p = sub.add_parser("recheck-stories"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_recheck)
+    p = sub.add_parser("recheck-stories"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--report", help="write every verifier decision to this UTF-8 TSV file"); p.set_defaults(fn=cmd_recheck)
     p = sub.add_parser("run"); p.set_defaults(fn=cmd_run)
     p = sub.add_parser("status"); p.set_defaults(fn=cmd_status)
 

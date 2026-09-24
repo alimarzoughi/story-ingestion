@@ -376,3 +376,27 @@ def test_pairs_retitles_an_anchored_story_without_touching_its_summary():
     stats = run_pairs(db, titler, SETTINGS)
     assert stats["titled"] == 1 and ban["title"] == "Trump bans three outlets from White House"
     assert ban["summary"] == founder["event_summary"] and ban["title_source"] == "llm"
+
+
+def test_founder_is_the_first_news_report_not_a_merged_in_creator():
+    from pipeline.cluster import founding_article
+    members = [
+        {"id": "ban-report", "published_at": "2026-09-18T10:00:00+00:00", "event_summary": "Trump bans outlets.",
+         "article_type": "news", "assignment": {"method": "threshold"}},
+        {"id": "suit-creator", "published_at": "2026-09-21T09:00:00+00:00", "event_summary": "Outlets sue.",
+         "article_type": "news", "assignment": {"method": "create"}},
+        {"id": "wire", "published_at": "2026-09-18T08:00:00+00:00", "event_summary": "AP: bans.",
+         "article_type": "news", "is_wire_copy": True, "assignment": {"method": "threshold"}},
+        {"id": "oped", "published_at": "2026-09-18T07:00:00+00:00", "event_summary": "Opinion.",
+         "article_type": "opinion", "assignment": {"method": "threshold"}},
+    ]
+    assert founding_article(members)["id"] == "ban-report"
+
+
+def test_recheck_report_lists_every_decision(tmp_path):
+    db, ban, founder, llm = _drifted_story_db()
+    path = tmp_path / "report.tsv"
+    run_recheck(db, llm, SETTINGS, dry_run=True, report_path=str(path))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("story_id\tstory_title_before") and len(lines) == 3  # header + 2 checked articles
+    assert any("\tdetached\t" in l for l in lines) and any("\tkept\t" in l for l in lines)

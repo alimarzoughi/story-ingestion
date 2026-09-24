@@ -348,11 +348,13 @@ RECHECK_SELECT = ASSIGN_SELECT + ",story_id,assignment"
 
 
 def founding_article(members: list[dict]) -> dict | None:
-    """The article whose development the story is about: the earliest article that created a story
-    (a merged-in story brings its own creator, so take the earliest), else the earliest member with a summary."""
+    """The story's first actual report: the earliest non-wire member of a type that can start a story
+    (news / live / explainer), else the earliest member with a summary. Deliberately NOT "the member whose
+    assignment says create": a merge carries the absorbed story's creator along (e.g. a lawsuit report), and
+    that must never become the anchor of the story it was merged into."""
     with_summary = [m for m in members if m.get("event_summary")]
-    creators = [m for m in with_summary if (m.get("assignment") or {}).get("method") == "create"]
-    pool = creators or with_summary
+    reports = [m for m in with_summary if m.get("article_type") in CREATES_STORIES and not m.get("is_wire_copy")]
+    pool = reports or with_summary
     return min(pool, key=lambda m: m["published_at"]) if pool else None
 
 
@@ -372,7 +374,8 @@ def recheck_suspects(members: list[dict], story: dict, settings: Settings, ancho
     return out
 
 
-def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, max_checks: int = 2000) -> dict:
+def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, max_checks: int = 2000,
+                report_path: str | None = None) -> dict:
     """Detach members whose main point is a follow-up development, so the next assign pass files them correctly.
 
     Only touches articles attached under an older rule and only those the current rule would have verified
@@ -395,7 +398,7 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
         if founder and story.get("title_source") == "llm" and founder["event_summary"] != story.get("summary"):
             old_title = story["title"]
             story = {**story, "summary": founder["event_summary"], "title": placeholder_title(founder["event_summary"]),
-                     "title_source": "auto"}
+                     "title_source": "auto", "_old_title": old_title}
             stats["reanchored"] += 1
             if len(reanchored) < 15:
                 reanchored.append(f"  - {old_title[:70]}  ->  {story['title'][:70]}")
@@ -422,6 +425,7 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
 
     touched: set[str] = set()
     samples: list[str] = []
+    report_rows: list[list[str]] = []
     candidates_to_split: list[tuple[float, str]] = []  # every follow_up/unrelated answer, whatever its confidence
     with ThreadPoolExecutor(max_workers=settings.enrich_concurrency) as pool:
         for future in [pool.submit(check, item) for item in work]:
@@ -436,6 +440,10 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
                 confidence = float(out.get("confidence") or 0)
             except (TypeError, ValueError):
                 confidence = 0.0
+            report_rows.append([story["id"], story.get("_old_title") or story["title"], story["title"],
+                                article["id"], article.get("outlet") or "", article.get("published_at") or "",
+                                article.get("title") or "", relation or "", f"{confidence:.2f}",
+                                "kept" if chosen is not None else "detached", (out.get("reason") or "").replace("\t", " ")])
             if relation in ("follow_up", "unrelated"):
                 candidates_to_split.append((confidence, f"[{relation} {confidence:.2f}] [{story['title'][:50]}] -> "
                                                         f"{article.get('outlet')}: {article.get('title', '')[:80]}"))
@@ -460,6 +468,14 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
             db.rpc("refresh_story_stats", {"target": story_id})
     mode = " (dry run: nothing written)" if dry_run else ""
     print(f"[recheck]{mode} kept={stats['kept']} detached={stats['detached']} failed={stats['failed']}")
+    if report_path:
+        import csv
+        with open(report_path, "w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh, delimiter="\t")
+            w.writerow(["story_id", "story_title_before", "story_anchor", "article_id", "outlet", "published_at",
+                        "headline", "relation", "confidence", "decision", "reason"])
+            w.writerows(sorted(report_rows, key=lambda r: (r[1], r[5])))
+        print(f"[recheck] wrote {len(report_rows)} decisions to {report_path} (verify model: {settings.verify_model})")
     if candidates_to_split:
         # How many would be split at other thresholds: pick SPLIT_MIN_CONFIDENCE from real answers, not a guess.
         print(f"[recheck] verifier said follow_up/unrelated for {len(candidates_to_split)} articles; "
