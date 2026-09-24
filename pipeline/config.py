@@ -34,7 +34,9 @@ class Settings:
     verify_model: str = "gpt-5-mini"
     embed_model: str = "text-embedding-3-small"
     embed_dims: int = 768
-    reasoning_effort: str | None = None          # only sent for gpt-5* models
+    reasoning_effort: str | None = None          # gpt-5* models ('minimal' by default)
+    verify_reasoning_effort: str | None = None   # gpt-6* models (default 'low'; gpt-6 has no 'minimal')
+    verify_fallback_model: str | None = "gpt-5-mini"  # used if the verify model errors after retries
     prompt_version: str = "2026-09-17.2"
     # ingest
     fetch_concurrency: int = 8
@@ -86,6 +88,8 @@ class Settings:
             embed_model=_env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
             embed_dims=int(_env("OPENAI_EMBED_DIMS", "768")),
             reasoning_effort=effort,
+            verify_reasoning_effort=_env("OPENAI_VERIFY_REASONING_EFFORT"),
+            verify_fallback_model=_env("OPENAI_VERIFY_FALLBACK_MODEL", "gpt-5-mini"),
             fetch_concurrency=int(_env("FETCH_CONCURRENCY", "8")),
             feed_max_age_hours=int(_env("FEED_MAX_AGE_HOURS", "72")),
             fetch_impersonate=_env("FETCH_IMPERSONATE", "chrome"),
