@@ -9,7 +9,7 @@ on:
         description: 'Pipeline command'
         type: choice
         default: run
-        options: [run, verify-feeds, ingest, enrich, assign, pairs, status, sync-sources]
+        options: [run, verify-feeds, ingest, enrich, assign, merge, pairs, status, sync-sources, fix-text, recheck-stories]
 
 concurrency:
   group: pipeline
@@ -18,7 +18,8 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # the one-off recheck re-verifies a few days of stories sequentially; everything else fits in 25 min
+    timeout-minutes: ${{ github.event.inputs.command == 'recheck-stories' && 90 || 25 }}
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}

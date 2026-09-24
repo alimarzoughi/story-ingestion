@@ -9,6 +9,7 @@ from typing import Any
 from .config import Settings
 from .db import Db
 from .llm import LLM
+from .textclean import is_non_article_title
 
 OPPOSING = {("supports", "opposes"), ("opposes", "supports"), ("critical_of_left", "critical_of_right"), ("critical_of_right", "critical_of_left")}
 
@@ -22,7 +23,14 @@ TITLE_SCHEMA = {
     },
     "required": ["story_title", "story_summary", "headline_contrast"],
 }
-TITLE_SYSTEM = "You write neutral story titles and one-line framing contrasts for a news comparison app. Be concrete and even-handed. Return only JSON."
+TITLE_SYSTEM = (
+    "You write neutral story titles and one-line framing contrasts for a news comparison app. Be concrete and even-handed. "
+    "The story title and summary must name the ORIGINAL development given under 'Development' (e.g. 'Trump bans three outlets "
+    "from White House'), not reactions to it or later follow-ups. Return only JSON."
+)
+
+# never shown as a side's headline (still counted as story members)
+NOT_DISPLAYABLE_TYPES = {"roundup"}
 
 
 def _norm_title(t: str) -> str:
@@ -46,6 +54,13 @@ def _axes(article: dict) -> set[str]:
     return {a.strip().lower() for a in ((article.get("stance") or {}).get("framing_axes") or []) if a}
 
 
+def displayable(article: dict) -> bool:
+    """Can this member be shown as a headline? Excludes wire copy, roundups/newsletters, show pages and transcripts."""
+    return (not article.get("is_wire_copy")
+            and article.get("article_type") not in NOT_DISPLAYABLE_TYPES
+            and not is_non_article_title(article.get("title")))
+
+
 def score_pair(left: dict, right: dict, current_outlets: set[str] | None = None) -> tuple[float, str, dict]:
     score, detail = 0.0, {}
     (dl, cl), (dr, cr) = _dir(left), _dir(right)
@@ -64,6 +79,8 @@ def score_pair(left: dict, right: dict, current_outlets: set[str] | None = None)
         score += 1.0
     elif {left.get("article_type"), right.get("article_type")} == {"news", "opinion"}:
         score -= 1.0
+    if "live" in (left.get("article_type"), right.get("article_type")):
+        score -= 1.5
     if left.get("image_url") and right.get("image_url"):
         score += 1.0
     if left.get("snippet") and right.get("snippet"):
@@ -82,8 +99,8 @@ def _ts(value: str) -> datetime:
 
 
 def best_pair(members: list[dict], settings: Settings, current: dict | None) -> tuple[dict, dict, float, str, dict] | None:
-    lefts = [m for m in members if m.get("side") == "left" and not m.get("is_wire_copy")]
-    rights = [m for m in members if m.get("side") == "right" and not m.get("is_wire_copy")]
+    lefts = [m for m in members if m.get("side") == "left" and displayable(m)]
+    rights = [m for m in members if m.get("side") == "right" and displayable(m)]
     if not lefts or not rights:
         return None
     current_outlets = None
@@ -128,6 +145,9 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
                 current = {**existing[0], "left_outlet": l["outlet"], "right_outlet": r["outlet"]}
         choice = best_pair(members, settings, current)
         if choice is None:
+            if existing:  # the old pair no longer stands (members detached or reclassified)
+                db.update("story_pairs", {"story_id": f"eq.{story['id']}", "is_current": "eq.true"}, {"is_current": False})
+                stats["retired"] = stats.get("retired", 0) + 1
             stats["no_pair"] += 1
             continue
         left, right, score, kind, detail = choice
@@ -157,7 +177,7 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
             except Exception as exc:
                 print(f"[pairs] title/contrast call failed for {story['id']}: {str(exc)[:160]}")
 
-        if current:
+        if existing:  # includes a stale current pair whose articles are no longer members
             db.update("story_pairs", {"story_id": f"eq.{story['id']}", "is_current": "eq.true"}, {"is_current": False})
         db.insert("story_pairs", {
             "story_id": story["id"], "left_article_id": left["id"], "right_article_id": right["id"],
@@ -166,7 +186,7 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
         }, returning=False, on_conflict="story_id,left_article_id,right_article_id")
         if title_patch:
             db.update("stories", {"id": f"eq.{story['id']}"}, title_patch)
-        stats["replaced" if current else "created"] += 1
+        stats["replaced" if existing else "created"] += 1
 
     print(f"[pairs] stories={stats['stories']} created={stats['created']} replaced={stats['replaced']} kept={stats['kept']} no_pair={stats['no_pair']} titled={stats['titled']}")
     return stats

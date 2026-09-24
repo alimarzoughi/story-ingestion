@@ -6,8 +6,14 @@
   python -m pipeline.cli enrich  [--limit N] [--dry-run]
   python -m pipeline.cli assign  [--limit N]
   python -m pipeline.cli pairs   [--lookback-hours N] [--story ID]
-  python -m pipeline.cli run     (sync-sources -> ingest -> enrich -> assign -> pairs)
+  python -m pipeline.cli merge                                             (fold duplicate stories)
+  python -m pipeline.cli run     (sync-sources -> ingest -> enrich -> assign -> merge -> pairs)
   python -m pipeline.cli status
+
+One-off maintenance:
+  python -m pipeline.cli fix-text        [--dry-run]   decode HTML entities left in stored titles/snippets
+  python -m pipeline.cli recheck-stories [--dry-run]   re-apply the follow-up rule to existing stories, then
+                                                       re-assign detached articles, merge duplicates, rebuild pairs
 """
 from __future__ import annotations
 
@@ -90,11 +96,45 @@ def cmd_pairs(args) -> int:
     return 0
 
 
+def cmd_merge(args) -> int:
+    settings = Settings.from_env()
+    from .merge import run_merge
+    run_merge(_db(settings), _llm(settings), settings)
+    return 0
+
+
+def cmd_fix_text(args) -> int:
+    settings = Settings.from_env()
+    from .maintenance import fix_text
+    fix_text(_db(settings), dry_run=args.dry_run)
+    return 0
+
+
+def cmd_recheck(args) -> int:
+    settings = Settings.from_env()
+    from .cluster import run_assign, run_recheck
+    from .merge import run_merge
+    from .pairs import run_pairs
+    db, llm = _db(settings), _llm(settings)
+    stats = run_recheck(db, llm, settings, dry_run=args.dry_run)
+    if args.dry_run:
+        print(f"[recheck] dry run finished | {llm.usage_summary()}")
+        return 0
+    # detached articles are unassigned again: file them under the current rule, then clean up
+    if stats["detached"]:
+        run_assign(db, llm, settings, _source_leaning(db), limit=max(settings.assign_batch, stats["detached"] + 100))
+    run_merge(db, llm, settings)
+    run_pairs(db, llm, settings, lookback_hours=24 * 7)
+    print(f"[recheck] finished | {llm.usage_summary()}")
+    return 0
+
+
 def cmd_run(args) -> int:
     settings = Settings.from_env()
     from .cluster import run_assign
     from .enrich import run_enrich
     from .ingest import run_ingest
+    from .merge import run_merge
     from .pairs import run_pairs
     from .sources import sync_sources
 
@@ -106,6 +146,10 @@ def cmd_run(args) -> int:
     run_ingest(db, settings, sources)
     run_enrich(db, llm, settings)
     run_assign(db, llm, settings, _source_leaning(db))
+    try:
+        run_merge(db, llm, settings)
+    except Exception as exc:  # a merge failure must not block the feed update
+        print(f"[run] merge failed: {str(exc)[:200]}")
     run_pairs(db, llm, settings)
     try:
         trimmed = db.rpc("trim_old_bodies", {"older_than": "30 days"})
@@ -141,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("enrich"); p.add_argument("--limit", type=int); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_enrich)
     p = sub.add_parser("assign"); p.add_argument("--limit", type=int); p.set_defaults(fn=cmd_assign)
     p = sub.add_parser("pairs"); p.add_argument("--lookback-hours", type=int); p.add_argument("--story"); p.set_defaults(fn=cmd_pairs)
+    p = sub.add_parser("merge"); p.set_defaults(fn=cmd_merge)
+    p = sub.add_parser("fix-text"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_fix_text)
+    p = sub.add_parser("recheck-stories"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_recheck)
     p = sub.add_parser("run"); p.set_defaults(fn=cmd_run)
     p = sub.add_parser("status"); p.set_defaults(fn=cmd_status)
 

@@ -52,6 +52,12 @@ class Settings:
     candidate_window_hours: int = 96
     event_date_max_gap_days: int = 3
     assign_batch: int = 300
+    auto_attach_window_hours: int = 12           # later arrivals always go through the verifier (follow-up check)
+    # merge (duplicate stories)
+    merge_min_similarity: float = 0.86
+    merge_lookback_hours: int = 48
+    merge_max_checks: int = 30
+    merge_max_event_gap_days: int = 1
     # pairs
     pairs_lookback_hours: int = 48
     near_duplicate_title_ratio: float = 0.90
@@ -85,4 +91,6 @@ class Settings:
             attach_threshold=float(_env("ATTACH_THRESHOLD", "0.83")),
             verify_threshold=float(_env("VERIFY_THRESHOLD", "0.66")),
             candidate_window_hours=int(_env("CANDIDATE_WINDOW_HOURS", "96")),
+            auto_attach_window_hours=int(_env("AUTO_ATTACH_WINDOW_HOURS", "12")),
+            merge_min_similarity=float(_env("MERGE_MIN_SIMILARITY", "0.86")),
         )

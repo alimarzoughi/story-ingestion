@@ -24,6 +24,10 @@ class FakeDb:
             return (v is None) if val == "null" else (v is not None)
         if op == "gte":
             return v is not None and str(v) >= val if not isinstance(v, (int, float)) else v >= float(val)
+        if op == "gt":
+            return v is not None and str(v) > val if not isinstance(v, (int, float)) else v > float(val)
+        if op == "in":
+            return str(v) in val.strip("()").split(",")
         raise NotImplementedError(op)
 
     def select(self, table, **params):
@@ -55,8 +59,27 @@ class FakeDb:
         return []
 
     def rpc(self, name, payload):
+        self.rpc_calls = getattr(self, "rpc_calls", []) + [(name, payload)]
         if name == "close_stale_stories":
             return 0
+        if name == "refresh_story_stats":
+            story = next(s for s in self.tables["stories"] if s["id"] == payload["target"])
+            members = [a for a in self.tables["articles_v3"] if a.get("story_id") == story["id"]]
+            story.update(article_count=len(members), left_count=sum(a.get("side") == "left" for a in members),
+                         right_count=sum(a.get("side") == "right" for a in members))
+            return None
+        if name == "story_merge_candidates":
+            return list(getattr(self, "merge_candidates", []))
+        if name == "merge_stories":
+            moved = 0
+            for a in self.tables["articles_v3"]:
+                if a.get("story_id") == payload["absorbed"]:
+                    a["story_id"] = payload["survivor"]
+                    moved += 1
+            for s in self.tables["stories"]:
+                if s["id"] == payload["absorbed"]:
+                    s["status"] = "merged"
+            return moved
         q = pg_to_vec(payload["query"])
         out = []
         for s in self.tables["stories"]:
@@ -64,7 +87,7 @@ class FakeDb:
                 continue
             c = pg_to_vec(s["centroid"])
             sim = sum(a * b for a, b in zip(q, c))
-            out.append({"id": s["id"], "similarity": sim, "last_seen": s["last_seen"], "event_date": s.get("event_date"),
+            out.append({"id": s["id"], "similarity": sim, "first_seen": s["first_seen"], "last_seen": s["last_seen"], "event_date": s.get("event_date"),
                         "key_entities": s.get("key_entities", []), "title": s["title"], "summary": s["summary"], "article_count": s["article_count"]})
         out.sort(key=lambda r: -r["similarity"])
         return out[: payload["k"]]

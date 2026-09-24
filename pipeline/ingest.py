@@ -13,6 +13,7 @@ import requests
 from .config import Settings
 from .db import Db
 from .extract import extract_page, make_snippet, parse_datetime
+from .textclean import clean_text, is_non_article_title
 from .urls import canonicalize, url_hash
 
 
@@ -173,12 +174,14 @@ def build_row(source: dict, entry: dict, page: dict, html_len: int, max_age_hour
             # story, so it must not be allowed to silently drop a fresh feed entry.
             published = newest
             date_source = "feed_override"
-    title = page.get("title") or entry.get("title")
+    title = clean_text(page.get("title")) or clean_text(entry.get("title"))
     if not title:
         return None
+    if is_non_article_title(title):
+        return {"_non_article": True}
     text = page.get("text") or ""
-    feed_title = entry.get("title")
-    headline = feed_title if feed_title and feed_title.strip() != title.strip() else None
+    feed_title = clean_text(entry.get("title"))
+    headline = feed_title if feed_title and feed_title != title else None
     authors = page.get("authors") or ([entry["author"]] if entry.get("author") else [])
     return {
         "source_id": source["id"],
@@ -188,10 +191,10 @@ def build_row(source: dict, entry: dict, page: dict, html_len: int, max_age_hour
         "url_hash": url_hash(canonical),
         "title": title[:500],
         "headline": headline[:500] if headline else None,
-        "subheadline": (page.get("description") or entry.get("summary") or None),
+        "subheadline": clean_text(page.get("description") or entry.get("summary")),
         "body_text": text[:20000] or None,
         "body_chars": len(text),
-        "snippet": make_snippet(text) or make_snippet(entry.get("summary") or ""),
+        "snippet": clean_text(make_snippet(text) or make_snippet(entry.get("summary") or "")),
         "image_url": page.get("image") or entry.get("image_url"),
         "authors": authors,
         "published_at": published.isoformat(),
@@ -211,7 +214,7 @@ def build_row(source: dict, entry: dict, page: dict, html_len: int, max_age_hour
 
 def ingest_source(db: Db | None, fetcher: Fetcher, settings: Settings, source: dict, *, dry_run: bool = False) -> dict[str, Any]:
     stats = {"source": source["id"], "feed_entries": 0, "fresh": 0, "new": 0, "inserted": 0, "skipped_short": 0,
-             "stale": 0, "date_override": 0, "failed": 0, "errors": []}
+             "stale": 0, "date_override": 0, "non_article": 0, "failed": 0, "errors": []}
     try:
         entries = parse_feed(fetcher, source["feed_url"], source.get("alt_feed_urls"))
     except Exception as exc:
@@ -220,6 +223,10 @@ def ingest_source(db: Db | None, fetcher: Fetcher, settings: Settings, source: d
     stats["feed_entries"] = len(entries)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.feed_max_age_hours)
     fresh = [e for e in entries if (e["published_at"] is None or e["published_at"] >= cutoff)]
+    # show-episode pages and transcripts: skip before spending a page fetch on them
+    non_articles = [e for e in fresh if is_non_article_title(clean_text(e.get("title")))]
+    stats["non_article"] = len(non_articles)
+    fresh = [e for e in fresh if e not in non_articles]
     fresh = fresh[: source.get("max_per_run", 40)]
     stats["fresh"] = len(fresh)
 
@@ -258,6 +265,9 @@ def ingest_source(db: Db | None, fetcher: Fetcher, settings: Settings, source: d
                 continue
             if row.get("_stale"):
                 stats["stale"] += 1
+                continue
+            if row.get("_non_article"):
+                stats["non_article"] += 1
                 continue
             if row["evidence"].get("date_source") == "feed_override":
                 stats["date_override"] += 1
@@ -302,6 +312,7 @@ def run_ingest(db: Db | None, settings: Settings, sources: list[dict], *, dry_ru
         results.append(stats)
         err = f" errors={len(stats['errors'])}" if stats["errors"] else ""
         extra = f" dateovr={stats['date_override']}" if stats["date_override"] else ""
+        extra += f" nonarticle={stats['non_article']}" if stats["non_article"] else ""
         print(f"[ingest] {source['id']:<32} feed={stats['feed_entries']:<3} fresh={stats['fresh']:<3} new={stats['new']:<3} inserted={stats['inserted']:<3} short={stats['skipped_short']:<2} stale={stats['stale']:<3} failed={stats['failed']:<2} {stats['seconds']}s{err}{extra}")
         for e in stats["errors"][:3]:
             print(f"          ! {e[:160]}")

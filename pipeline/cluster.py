@@ -23,10 +23,19 @@ VERIFY_SCHEMA = {
     "required": ["same_story_id", "confidence", "reason"],
 }
 
-VERIFY_SYSTEM = """You decide whether a news article covers the SAME specific development as one of a few candidate stories.
-'Same development' means the same concrete event or announcement (same actors, same action, same time), not merely the same topic, the same ongoing conflict, or a follow-up development.
-Examples: 'Israel strikes a Tehran hospital on April 3' and 'Iran retaliates on April 4' are DIFFERENT. Two outlets reporting the same Senate vote are the SAME. An opinion column reacting to that vote is the SAME development.
-If unsure, answer null. Return only JSON."""
+# Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
+# articles already decided under the current rule.
+ASSIGN_RULE = "2026-09-23.main-point"
+
+VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
+A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
+
+The article belongs to a candidate story only if the article's MAIN POINT (what its headline and opening are about) is that story's development.
+SAME story: other outlets reporting the development; reactions, statements, criticism or defences of it; analysis and opinion about it; the action simply being carried out (e.g. reporters turned away once a ban takes effect); new details about the same development.
+DIFFERENT story (a follow-up): the article's main point is a NEW development that grows out of the original, e.g. the banned outlets filing a lawsuit, a court ruling, a retaliation, a resignation, a vote on a response, an investigation opening. This holds even when the article recaps the original development at length.
+Examples: 'Trump bans three outlets' vs 'Outlets sue Trump over the ban' -> DIFFERENT. 'Trump bans three outlets' vs 'Fox hosts criticise the ban' -> SAME. 'Israel strikes Tehran on April 3' vs 'Iran retaliates on April 4' -> DIFFERENT. An opinion column about a Senate vote -> SAME as the vote.
+If a candidate is itself the follow-up development the article is about, choose that candidate.
+If no candidate fits, or you are unsure, answer null. Return only JSON."""
 
 
 def _parse_ts(value: str) -> datetime:
@@ -61,6 +70,24 @@ def date_compatible(article: dict, cand: dict, max_gap_days: int) -> bool:
     return abs((a - c).days) <= max_gap_days
 
 
+def needs_verification(article: dict, story: dict, settings: Settings) -> str | None:
+    """Why a high-scoring match must still go through the verifier, or None if it can attach directly.
+
+    Follow-up developments (a lawsuit over a ban, a retaliation after a strike) share nearly all their entities
+    with the original story, so similarity alone cannot tell them apart. They arrive later and usually carry a
+    later event date, so only early, same-event-date coverage is trusted without a verifier call.
+    """
+    first_seen = story.get("first_seen")
+    if not first_seen:
+        return "no_first_seen"
+    if _parse_ts(article["published_at"]) - _parse_ts(first_seen) > timedelta(hours=settings.auto_attach_window_hours):
+        return "late"
+    a, c = _parse_date(article.get("event_date")), _parse_date(story.get("event_date"))
+    if a and c and a > c:
+        return "later_event_date"
+    return None
+
+
 def decide(article: dict, candidates: list[dict], settings: Settings) -> tuple[str, dict | None, list[dict]]:
     """Returns (decision, chosen_candidate, scored) where decision in {'attach','verify','create'}."""
     scored: list[dict] = []
@@ -76,10 +103,37 @@ def decide(article: dict, candidates: list[dict], settings: Settings) -> tuple[s
         return "create", None, scored
     best = live[0]
     if best["score"] >= settings.attach_threshold:
-        return "attach", next(c for c in candidates if c["id"] == best["id"]), scored
+        chosen = next(c for c in candidates if c["id"] == best["id"])
+        reason = needs_verification(article, chosen, settings)
+        if reason is None:
+            return "attach", chosen, scored
+        best["verify_reason"] = reason
+        return "verify", None, scored
     if best["score"] >= settings.verify_threshold:
         return "verify", None, scored
     return "create", None, scored
+
+
+def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: list[dict]) -> tuple[dict | None, dict]:
+    """Ask the verifier which candidate story (if any) has the article's main point as its development.
+    Returns (chosen candidate or None, raw verifier output)."""
+    by_id = {c["id"]: c for c in candidates}
+    cand_text = "\n".join(
+        f"- id={c['id']}: {c.get('title')} | {c.get('summary')} (event_date={c.get('event_date')}, first reported={c.get('first_seen') or 'n/a'})"
+        for c in candidates
+    )
+    user = (
+        f"ARTICLE\nOutlet: {article.get('outlet')}\nPublished: {article.get('published_at')}\nHeadline: {article.get('title')}\n"
+        f"Neutral summary of its main development: {article.get('event_summary')}\nEvent date: {article.get('event_date')}\n"
+        f"Entities: {', '.join(article.get('key_entities') or [])}\n\n"
+        f"CANDIDATE STORIES\n{cand_text}\n\nWhich candidate story, if any, is this article's main point?"
+    )
+    out = llm.structured(kind="verify", model=settings.verify_model, system=VERIFY_SYSTEM, user=user,
+                         schema=VERIFY_SCHEMA, schema_name="story_verification", max_output_tokens=300)
+    sid = out.get("same_story_id")
+    if sid in by_id and float(out.get("confidence") or 0) >= 0.6:
+        return by_id[sid], out
+    return None, out
 
 
 def _normalize(vec: list[float]) -> list[float]:
@@ -114,24 +168,13 @@ class Assigner:
     def verify(self, article: dict, scored: list[dict], candidates: list[dict]) -> dict | None:
         if self.llm is None:
             return None
-        top = [x for x in scored if "score" in x][:3]
+        top_ids = [x["id"] for x in scored if "score" in x][:3]
         by_id = {c["id"]: c for c in candidates}
-        cand_text = "\n".join(
-            f"- id={x['id']}: {by_id[x['id']].get('title')} — {by_id[x['id']].get('summary')} (event_date={by_id[x['id']].get('event_date')})"
-            for x in top
-        )
-        user = (
-            f"ARTICLE\nOutlet: {article.get('outlet')}\nPublished: {article.get('published_at')}\nTitle: {article.get('title')}\n"
-            f"Neutral summary: {article.get('event_summary')}\nEvent date: {article.get('event_date')}\nEntities: {', '.join(article.get('key_entities') or [])}\n\n"
-            f"CANDIDATE STORIES\n{cand_text}\n\nWhich candidate, if any, is the same specific development?"
-        )
-        out = self.llm.structured(kind="verify", model=self.settings.verify_model, system=VERIFY_SYSTEM, user=user,
-                                  schema=VERIFY_SCHEMA, schema_name="story_verification", max_output_tokens=300)
+        chosen, out = verify_candidates(self.llm, self.settings, article, [by_id[i] for i in top_ids])
         self.stats["verified"] += 1
-        sid = out.get("same_story_id")
-        if sid in by_id and float(out.get("confidence") or 0) >= 0.6:
+        if chosen is not None:
             self.stats["verifier_attached"] += 1
-            return {**by_id[sid], "_verifier": out}
+            return {**chosen, "_verifier": out}
         return {"_verifier": out}  # no match
 
     def attach(self, article: dict, story: dict, embedding: list[float], method: str, scored: list[dict], extra: dict | None = None) -> None:
@@ -157,7 +200,7 @@ class Assigner:
         self.db.update("stories", {"id": f"eq.{story['id']}"}, patch)
         self.db.update("articles_v3", {"id": f"eq.{article['id']}"}, {
             "story_id": story["id"], "side": side, "assigned_at": datetime.now(timezone.utc).isoformat(),
-            "assignment": {"method": method, "candidates": scored[:5], "thresholds": [self.settings.attach_threshold, self.settings.verify_threshold], **(extra or {})},
+            "assignment": {"method": method, "rule": ASSIGN_RULE, "candidates": scored[:5], "thresholds": [self.settings.attach_threshold, self.settings.verify_threshold], **(extra or {})},
         })
 
     def create(self, article: dict, embedding: list[float], scored: list[dict], extra: dict | None = None) -> None:
@@ -182,7 +225,7 @@ class Assigner:
         })[0]
         self.db.update("articles_v3", {"id": f"eq.{article['id']}"}, {
             "story_id": story["id"], "side": side, "assigned_at": datetime.now(timezone.utc).isoformat(),
-            "assignment": {"method": "create", "candidates": scored[:5], "thresholds": [self.settings.attach_threshold, self.settings.verify_threshold], **(extra or {})},
+            "assignment": {"method": "create", "rule": ASSIGN_RULE, "candidates": scored[:5], "thresholds": [self.settings.attach_threshold, self.settings.verify_threshold], **(extra or {})},
         })
 
     def orphan(self, article: dict, scored: list[dict], reason: str) -> None:
@@ -247,3 +290,87 @@ def run_assign(db: Db, llm: LLM | None, settings: Settings, source_leaning: dict
     if closed:
         print(f"[assign] closed {closed} stale stories")
     return s
+
+
+# ---------------------------------------------------------------------------
+# recheck: re-apply the current attach rule to articles attached under an older rule
+# ---------------------------------------------------------------------------
+RECHECK_SELECT = ASSIGN_SELECT + ",story_id,assignment"
+
+
+def recheck_suspects(members: list[dict], story: dict, settings: Settings) -> list[dict]:
+    """Members that the current rule would have sent to the verifier but that were never verified under it."""
+    out = []
+    for m in members:
+        assignment = m.get("assignment") or {}
+        if assignment.get("method") == "create" or assignment.get("rule") == ASSIGN_RULE:
+            continue
+        if needs_verification(m, story, settings) is None:
+            continue
+        out.append(m)
+    return out
+
+
+def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, max_checks: int = 2000) -> dict:
+    """Detach members whose main point is a follow-up development, so the next assign pass files them correctly.
+
+    Only touches articles attached under an older rule and only those the current rule would have verified
+    (published > auto_attach_window_hours after the story began, or with a later event date).
+    Detached articles get story_id = NULL / assigned_at = NULL and are picked up by run_assign.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    stats = {"stories": 0, "suspects": 0, "kept": 0, "detached": 0, "failed": 0}
+    stories = db.select("stories", select="id,title,summary,event_date,first_seen,last_seen,article_count",
+                        status="eq.open", article_count="gte.2")
+    work: list[tuple[dict, dict]] = []
+    for story in stories:
+        members = db.select("articles_v3", select=RECHECK_SELECT, story_id=f"eq.{story['id']}")
+        suspects = recheck_suspects(members, story, settings)
+        if suspects:
+            stats["stories"] += 1
+            work.extend((m, story) for m in suspects)
+    work = work[:max_checks]
+    stats["suspects"] = len(work)
+    print(f"[recheck] {stats['suspects']} articles in {stats['stories']} stories need re-verification under rule {ASSIGN_RULE}")
+
+    def check(item: tuple[dict, dict]) -> tuple[dict, dict, dict | None, dict]:
+        article, story = item
+        chosen, out = verify_candidates(llm, settings, article, [story])
+        return article, story, chosen, out
+
+    touched: set[str] = set()
+    samples: list[str] = []
+    with ThreadPoolExecutor(max_workers=settings.enrich_concurrency) as pool:
+        for future in [pool.submit(check, item) for item in work]:
+            try:
+                article, story, chosen, out = future.result()
+            except Exception as exc:
+                stats["failed"] += 1
+                print(f"[recheck] verify failed: {str(exc)[:160]}")
+                continue
+            if chosen is not None:
+                stats["kept"] += 1
+                if not dry_run:
+                    db.update("articles_v3", {"id": f"eq.{article['id']}"},
+                              {"assignment": {**(article.get("assignment") or {}), "rule": ASSIGN_RULE, "rechecked": True}})
+                continue
+            stats["detached"] += 1
+            if len(samples) < 40:
+                samples.append(f"  - [{story['title'][:60]}] -> {article.get('outlet')}: {article.get('title', '')[:90]}")
+            if not dry_run:
+                db.update("articles_v3", {"id": f"eq.{article['id']}"}, {
+                    "story_id": None, "assigned_at": None, "side": None,
+                    "assignment": {"method": "detached", "rule": ASSIGN_RULE, "from_story": story["id"],
+                                   "verifier": out, "previous": article.get("assignment")},
+                })
+                touched.add(story["id"])
+    if not dry_run:
+        for story_id in touched:
+            db.rpc("refresh_story_stats", {"target": story_id})
+    mode = " (dry run: nothing written)" if dry_run else ""
+    print(f"[recheck]{mode} kept={stats['kept']} detached={stats['detached']} failed={stats['failed']}")
+    if samples:
+        print("[recheck] detached (story -> article):" if not dry_run else "[recheck] would detach (story -> article):")
+        print("\n".join(samples))
+    return stats

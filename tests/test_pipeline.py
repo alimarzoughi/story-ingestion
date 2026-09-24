@@ -165,7 +165,8 @@ def _art(**kw):
 
 
 def _cand(sim, **kw):
-    base = {"id": "c1", "similarity": sim, "last_seen": "2026-09-17T10:00:00+00:00", "event_date": "2026-09-17", "key_entities": ["U.S. Senate"], "title": "t", "summary": "s"}
+    base = {"id": "c1", "similarity": sim, "first_seen": "2026-09-17T09:00:00+00:00", "last_seen": "2026-09-17T10:00:00+00:00",
+            "event_date": "2026-09-17", "key_entities": ["U.S. Senate"], "title": "t", "summary": "s"}
     return {**base, **kw}
 
 
