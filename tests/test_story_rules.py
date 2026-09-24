@@ -1,5 +1,5 @@
 """Story specificity (main-point rule), duplicate merging, display filtering and text hygiene."""
-from pipeline.cluster import ASSIGN_RULE, decide, needs_verification, recheck_suspects, run_assign, run_recheck
+from pipeline.cluster import ASSIGN_RULE, split_memory, decide, needs_verification, recheck_suspects, run_assign, run_recheck
 from pipeline.config import Settings
 from pipeline.extract import extract_page
 from pipeline.ingest import build_row
@@ -400,3 +400,17 @@ def test_recheck_report_lists_every_decision(tmp_path):
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith("story_id\tstory_title_before") and len(lines) == 3  # header + 2 checked articles
     assert any("\tdetached\t" in l for l in lines) and any("\tkept\t" in l for l in lines)
+
+
+def test_merge_never_undoes_a_recheck_split():
+    """Weinstein 2026-09-24: recheck split the sentencing reports off 'awaits sentencing', they formed their own
+    story, and the next merge folded it straight back. The split is remembered and blocks that merge."""
+    db = _two_story_db()
+    detached = {"method": "detached", "from_story": "big", "rule": ASSIGN_RULE}
+    assert split_memory({"assignment": detached}) == {"split_from": "big"}
+    assert split_memory({"assignment": {"method": "orphan", "split_from": "big"}}) == {"split_from": "big"}
+    assert split_memory({"assignment": {"method": "create"}}) == {} and split_memory({}) == {}
+    db.tables["articles_v3"] = [{"id": "sentenced", "story_id": "dup", "assignment": {"method": "create", "split_from": "big"}}]
+    llm = FakeLLM(lambda kind, user: {"same_development": True, "confidence": 0.95, "reason": "t"})
+    stats = run_merge(db, llm, SETTINGS)
+    assert stats["merged"] == 0 and stats["rejected_split"] == 1 and not llm.calls

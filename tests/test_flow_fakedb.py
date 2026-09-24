@@ -17,7 +17,11 @@ class FakeDb:
     @staticmethod
     def _match(row, key, cond):
         op, _, val = cond.partition(".")
-        v = row.get(key)
+        if "->>" in key:  # PostgREST JSON field filter, e.g. assignment->>method
+            col, _, field = key.partition("->>")
+            v = (row.get(col) or {}).get(field)
+        else:
+            v = row.get(key)
         if op == "eq":
             return str(v) == val or (isinstance(v, bool) and str(v).lower() == val)
         if op == "is":

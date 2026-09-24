@@ -36,6 +36,15 @@ If unsure, answer false. Return only JSON."""
 STORY_SELECT = "id,title,summary,event_date,first_seen,last_seen,article_count,status"
 
 
+def split_between(db: Db, a_id: str, b_id: str) -> bool:
+    """True if either story holds an article that recheck/assign split off from the other one. Such a pair is a
+    story and its follow-up by an earlier decision; merging would silently undo that split."""
+    for here, other in ((a_id, b_id), (b_id, a_id)):
+        if db.select("articles_v3", select="id", story_id=f"eq.{here}", **{"assignment->>split_from": f"eq.{other}"}, limit="1"):
+            return True
+    return False
+
+
 def _date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
@@ -61,7 +70,7 @@ def _describe(db: Db, story: dict) -> str:
 
 
 def run_merge(db: Db, llm: LLM | None, settings: Settings) -> dict:
-    stats = {"candidates": 0, "checked": 0, "merged": 0, "moved": 0, "rejected_date": 0}
+    stats = {"candidates": 0, "checked": 0, "merged": 0, "moved": 0, "rejected_date": 0, "rejected_split": 0}
     if llm is None:
         print("[merge] skipped: no LLM (merges are never made without verification)")
         return stats
@@ -91,6 +100,9 @@ def run_merge(db: Db, llm: LLM | None, settings: Settings) -> dict:
         if not dates_compatible(a, b, settings.merge_max_event_gap_days):
             stats["rejected_date"] += 1
             continue
+        if split_between(db, a_id, b_id):
+            stats["rejected_split"] += 1
+            continue
         user = f"STORY A\n  {_describe(db, a)}\n\nSTORY B\n  {_describe(db, b)}\n\nAre A and B the same specific development?"
         try:
             out = llm.structured(kind="merge", model=settings.verify_model, system=MERGE_SYSTEM, user=user,
@@ -108,5 +120,5 @@ def run_merge(db: Db, llm: LLM | None, settings: Settings) -> dict:
         stats["moved"] += int(moved)
         print(f"[merge] '{drop['title'][:70]}' ({drop.get('article_count')}) -> '{keep['title'][:70]}' ({keep.get('article_count')}) sim={float(row['similarity']):.3f}")
     print(f"[merge] candidates={stats['candidates']} checked={stats['checked']} merged={stats['merged']} "
-          f"moved={stats['moved']} rejected_date={stats['rejected_date']}")
+          f"moved={stats['moved']} rejected_date={stats['rejected_date']} rejected_split={stats['rejected_split']}")
     return stats

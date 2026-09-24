@@ -28,7 +28,7 @@ VERIFY_SCHEMA = {
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-25b.anchored"
+ASSIGN_RULE = "2026-09-25c.split-guard"
 
 VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
@@ -280,7 +280,7 @@ class Assigner:
     def orphan(self, article: dict, scored: list[dict], reason: str) -> None:
         self.db.update("articles_v3", {"id": f"eq.{article['id']}"}, {
             "assigned_at": datetime.now(timezone.utc).isoformat(), "side": self.side_of(article),
-            "assignment": {"method": "orphan", "reason": reason, "candidates": scored[:5]},
+            "assignment": {"method": "orphan", "reason": reason, "candidates": scored[:5], **split_memory(article)},
         })
         self.stats["orphaned"] += 1
 
@@ -291,7 +291,7 @@ class Assigner:
             return
         candidates = self.candidates_for(article, embedding)
         decision, chosen, scored = decide(article, candidates, self.settings)
-        extra: dict[str, Any] = {}
+        extra: dict[str, Any] = split_memory(article)
         if decision == "verify":
             result = self.verify(article, scored, candidates)
             extra["verifier"] = (result or {}).get("_verifier")
@@ -314,14 +314,22 @@ class Assigner:
 ASSIGN_SELECT = "id,source_id,outlet,title,published_at,event_summary,event_date,key_entities,category,article_type,leaning_label,leaning_conf,is_wire_copy,embedding"
 
 
+def split_memory(article: dict) -> dict:
+    """Remember which story an article was split off from (`split_from`), across re-assignment and orphan retries,
+    so the merge stage never folds the follow-up story back into the story it was split from."""
+    a = article.get("assignment") or {}
+    origin = a.get("split_from") or (a.get("from_story") if a.get("method") == "detached" else None)
+    return {"split_from": origin} if origin else {}
+
+
 def run_assign(db: Db, llm: LLM | None, settings: Settings, source_leaning: dict[str, str], *, limit: int | None = None) -> dict:
     limit = limit or settings.assign_batch
-    rows = db.select("articles_v3", select=ASSIGN_SELECT, enrichment_status="eq.done", story_id="is.null",
+    rows = db.select("articles_v3", select=ASSIGN_SELECT + ",assignment", enrichment_status="eq.done", story_id="is.null",
                      assigned_at="is.null", order="published_at.asc", limit=str(limit))
     # retry orphans (opinion/analysis whose story did not exist yet) for 48h, at most once per hour
     since = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
     retry_before = (datetime.now(timezone.utc) - timedelta(minutes=55)).isoformat()
-    orphans = db.select("articles_v3", select=ASSIGN_SELECT, enrichment_status="eq.done", story_id="is.null",
+    orphans = db.select("articles_v3", select=ASSIGN_SELECT + ",assignment", enrichment_status="eq.done", story_id="is.null",
                         **{"assignment->>method": "eq.orphan", "published_at": f"gte.{since}", "assigned_at": f"lte.{retry_before}"},
                         order="published_at.asc", limit="100")
     assigner = Assigner(db, llm, settings, source_leaning)
