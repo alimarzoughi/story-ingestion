@@ -17,16 +17,18 @@ VERIFY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "same_story_id": {"type": ["string", "null"], "description": "The candidate id whose story is the SAME specific development as the article, or null if none."},
-        "confidence": {"type": "number"},
+        "candidate_id": {"type": ["string", "null"], "description": "The candidate story the article is closest to: the one whose development it is about, or grows out of. Null only if it relates to none of them."},
+        "relation": {"type": "string", "enum": ["same_development", "follow_up", "unrelated"],
+                     "description": "How the article's main point relates to that candidate's development."},
+        "confidence": {"type": "number", "description": "0-1: how confident you are in the relation you chose."},
         "reason": {"type": "string"},
     },
-    "required": ["same_story_id", "confidence", "reason"],
+    "required": ["candidate_id", "relation", "confidence", "reason"],
 }
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-24.main-point"
+ASSIGN_RULE = "2026-09-25.same-by-default"
 
 VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
@@ -35,9 +37,13 @@ The article belongs to a candidate story only if the article's MAIN POINT (what 
 SAME story: other outlets reporting the development; reactions, statements, criticism or defences of it; analysis and opinion about it, including op-eds arguing for or against it; the action simply being carried out (e.g. reporters turned away once a ban takes effect); new details about the same development. Commentary and reaction pieces (how a speech, ad, poll or decision was received, what critics or supporters said about it) belong to that development's story even when their angle or tone is new.
 DIFFERENT story (a follow-up): the article's main point is a NEW development that grows out of the original, e.g. the banned outlets filing a lawsuit, a court ruling, a retaliation, a resignation, a vote on a response, an investigation opening. This holds even when the article recaps the original development at length.
 Examples: 'Trump bans three outlets' vs 'Outlets sue Trump over the ban' -> DIFFERENT. 'Trump bans three outlets' vs 'Fox hosts criticise the ban' -> SAME. 'Israel strikes Tehran on April 3' vs 'Iran retaliates on April 4' -> DIFFERENT. An opinion column about a Senate vote -> SAME as the vote.
-If a candidate is itself the follow-up development the article is about, choose that candidate.
-Split only for a genuinely new development (a new action or event), not for a new angle on the same one.
-If no candidate fits, or you are unsure whether it is the same development, answer null. Return only JSON."""
+If a candidate is itself the follow-up development the article is about, choose that candidate with relation same_development.
+
+Answer with the closest candidate and one relation:
+- same_development: the article's main point is that candidate's development (including any reaction, commentary or analysis of it).
+- follow_up: the article's main point is clearly a NEW action or event that grows out of that candidate's development.
+- unrelated: the article is about something else entirely.
+Choose follow_up only for a genuinely new action or event, never for a new angle, tone or reaction. When torn between same_development and follow_up, choose same_development. Give an honest confidence. Return only JSON."""
 
 
 def _parse_ts(value: str) -> datetime:
@@ -116,9 +122,17 @@ def decide(article: dict, candidates: list[dict], settings: Settings) -> tuple[s
     return "create", None, scored
 
 
-def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: list[dict]) -> tuple[dict | None, dict]:
-    """Ask the verifier which candidate story (if any) has the article's main point as its development.
-    Returns (chosen candidate or None, raw verifier output)."""
+def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: list[dict], *,
+                      keep_id: str | None = None) -> tuple[dict | None, dict]:
+    """Ask the verifier which candidate story the article's main point belongs to.
+
+    Returns (chosen candidate or None, raw verifier output). Two modes:
+    - keep_id=None (gray zone, weak similarity): attach only on an affirmative same_development answer.
+    - keep_id=<story id> (strong similarity, or an existing member being rechecked): SAME BY DEFAULT. The article
+      stays with keep_id unless the verifier is at least `split_min_confidence` sure it is a follow-up or unrelated.
+      Lumping a follow-up in with the original is a smaller error than splitting coverage of the original off
+      (a split-off opinion piece has no story to live in and vanishes from the feed).
+    """
     by_id = {c["id"]: c for c in candidates}
     cand_text = "\n".join(
         f"- id={c['id']}: {c.get('title')} | {c.get('summary')} (event_date={c.get('event_date')}, first reported={c.get('first_seen') or 'n/a'})"
@@ -128,13 +142,21 @@ def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: l
         f"ARTICLE\nOutlet: {article.get('outlet')}\nPublished: {article.get('published_at')}\nHeadline: {article.get('title')}\n"
         f"Neutral summary of its main development: {article.get('event_summary')}\nEvent date: {article.get('event_date')}\n"
         f"Entities: {', '.join(article.get('key_entities') or [])}\n\n"
-        f"CANDIDATE STORIES\n{cand_text}\n\nWhich candidate story, if any, is this article's main point?"
+        f"CANDIDATE STORIES\n{cand_text}\n\nWhich candidate is this article closest to, and how does its main point relate to it?"
     )
     out = llm.structured(kind="verify", model=settings.verify_model, system=VERIFY_SYSTEM, user=user,
                          schema=VERIFY_SCHEMA, schema_name="story_verification", max_output_tokens=300)
-    sid = out.get("same_story_id")
-    if sid in by_id and float(out.get("confidence") or 0) >= 0.6:
-        return by_id[sid], out
+    relation, cid = out.get("relation"), out.get("candidate_id")
+    try:
+        confidence = float(out.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if relation == "same_development" and cid in by_id and (keep_id is not None or confidence >= 0.6):
+        return by_id[cid], out
+    if keep_id is not None:
+        if relation in ("follow_up", "unrelated") and confidence >= settings.split_min_confidence:
+            return None, out
+        return by_id[keep_id], out  # not confident it is a new development: it stays
     return None, out
 
 
@@ -189,10 +211,15 @@ class Assigner:
 
     def verify(self, article: dict, scored: list[dict], candidates: list[dict]) -> dict | None:
         if self.llm is None:
+            best = max((x for x in scored if "score" in x), key=lambda x: x["score"], default=None)
+            if best and best.get("verify_reason"):  # strong match, no verifier available: same by default
+                return next(c for c in candidates if c["id"] == best["id"])
             return None
-        top_ids = [x["id"] for x in scored if "score" in x][:3]
+        live = sorted((x for x in scored if "score" in x), key=lambda x: x["score"], reverse=True)[:3]
         by_id = {c["id"]: c for c in candidates}
-        chosen, out = verify_candidates(self.llm, self.settings, article, [by_id[i] for i in top_ids])
+        # a strong match that was only sent here because it arrived late / carries a later event date
+        keep_id = live[0]["id"] if live and live[0].get("verify_reason") else None
+        chosen, out = verify_candidates(self.llm, self.settings, article, [by_id[x["id"]] for x in live], keep_id=keep_id)
         self.stats["verified"] += 1
         if chosen is not None:
             self.stats["verifier_attached"] += 1
@@ -358,11 +385,12 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
 
     def check(item: tuple[dict, dict]) -> tuple[dict, dict, dict | None, dict]:
         article, story = item
-        chosen, out = verify_candidates(llm, settings, article, [story])
+        chosen, out = verify_candidates(llm, settings, article, [story], keep_id=story["id"])
         return article, story, chosen, out
 
     touched: set[str] = set()
     samples: list[str] = []
+    candidates_to_split: list[tuple[float, str]] = []  # every follow_up/unrelated answer, whatever its confidence
     with ThreadPoolExecutor(max_workers=settings.enrich_concurrency) as pool:
         for future in [pool.submit(check, item) for item in work]:
             try:
@@ -371,6 +399,14 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
                 stats["failed"] += 1
                 print(f"[recheck] verify failed: {str(exc)[:160]}")
                 continue
+            relation = out.get("relation")
+            try:
+                confidence = float(out.get("confidence") or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if relation in ("follow_up", "unrelated"):
+                candidates_to_split.append((confidence, f"[{relation} {confidence:.2f}] [{story['title'][:50]}] -> "
+                                                        f"{article.get('outlet')}: {article.get('title', '')[:80]}"))
             if chosen is not None:
                 stats["kept"] += 1
                 if not dry_run:
@@ -379,7 +415,7 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
                 continue
             stats["detached"] += 1
             if len(samples) < 40:
-                samples.append(f"  - [{story['title'][:60]}] -> {article.get('outlet')}: {article.get('title', '')[:90]}")
+                samples.append(f"  - [{relation} {confidence:.2f}] [{story['title'][:55]}] -> {article.get('outlet')}: {article.get('title', '')[:85]}")
             if not dry_run:
                 db.update("articles_v3", {"id": f"eq.{article['id']}"}, {
                     "story_id": None, "assigned_at": None, "side": None,
@@ -392,6 +428,17 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
             db.rpc("refresh_story_stats", {"target": story_id})
     mode = " (dry run: nothing written)" if dry_run else ""
     print(f"[recheck]{mode} kept={stats['kept']} detached={stats['detached']} failed={stats['failed']}")
+    if candidates_to_split:
+        # How many would be split at other thresholds: pick SPLIT_MIN_CONFIDENCE from real answers, not a guess.
+        print(f"[recheck] verifier said follow_up/unrelated for {len(candidates_to_split)} articles; "
+              f"split at threshold (current = {settings.split_min_confidence}):")
+        for t in (0.5, 0.6, 0.66, 0.7, 0.75, 0.8, 0.85, 0.9):
+            n = sum(1 for c, _ in candidates_to_split if c >= t)
+            print(f"    >= {t:.2f}: {n:>4}")
+        border = sorted((x for x in candidates_to_split if 0.5 <= x[0] < 0.85), key=lambda x: x[0])
+        if border:
+            print("[recheck] borderline answers (0.50-0.84), lowest first:")
+            print("\n".join("  - " + line for _, line in border[:40]))
     if samples:
         print("[recheck] detached (story -> article):" if not dry_run else "[recheck] would detach (story -> article):")
         print("\n".join(samples))

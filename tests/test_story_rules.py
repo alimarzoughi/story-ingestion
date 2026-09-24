@@ -106,7 +106,8 @@ def test_followup_lawsuit_becomes_its_own_story_but_reactions_stay():
 
     def rule(kind, user):
         headline = user.split("Headline: ")[1].split("\n")[0]
-        return {"same_story_id": None if "lawsuit" in headline else ban_id, "confidence": 0.9, "reason": "test"}
+        relation = "follow_up" if "lawsuit" in headline else "same_development"
+        return {"candidate_id": ban_id, "relation": relation, "confidence": 0.9, "reason": "test"}
 
     llm = FakeLLM(rule)
     stats = run_assign(db, llm, SETTINGS, leaning)
@@ -133,8 +134,8 @@ def test_recheck_detaches_followups_attached_under_the_old_rule():
     assert {m["title"] for m in recheck_suspects(members, ban, SETTINGS)} == {
         "Waltz says Trump was spot on banning CNN", "Outlets sue Trump over White House ban"}
 
-    llm = FakeLLM(lambda kind, user: {"same_story_id": None if "sue" in user.split("Headline: ")[1].split("\n")[0] else ban["id"],
-                                      "confidence": 0.9, "reason": "t"})
+    llm = FakeLLM(lambda kind, user: {"candidate_id": ban["id"], "confidence": 0.9, "reason": "t",
+                                      "relation": "follow_up" if "sue" in user.split("Headline: ")[1].split("\n")[0] else "same_development"})
     ban["article_count"] = 4
     dry = run_recheck(db, llm, SETTINGS, dry_run=True)
     assert dry["detached"] == 1 and all(a.get("story_id") == ban["id"] for a in members)  # dry run writes nothing
@@ -239,3 +240,64 @@ def test_placeholder_titles_do_not_stop_at_abbreviations():
     assert placeholder_title("Indianapolis Colts vs. Kansas City Chiefs ended 24-20. Swift attended.").startswith("Indianapolis Colts vs. Kansas")
     assert placeholder_title("The U.S. and Denmark agreed to military rights in Greenland. Talks continue.").endswith("Greenland")
     assert len(placeholder_title("word " * 100)) <= 121
+
+
+
+# ---------------------------------------------------------------- same by default (split only when >= 66% sure)
+def _late_article_db():
+    db, leaning = _ban_db()
+    ban_id = db.tables["stories"][0]["id"]
+    db.insert("articles_v3", [
+        article("Townhall", "dw", "Liberal Outlets Are Lashing Out About Trump's Press Crackdown", [1, 0.02, 0], None,
+                atype="opinion", published="2026-09-20T12:00:00+00:00", event_date="2026-09-19"),
+    ])
+    return db, leaning, ban_id
+
+
+def test_unsure_follow_up_stays_with_the_story():
+    for relation, confidence in [("follow_up", 0.55), ("unrelated", 0.4), ("same_development", 0.3)]:
+        db, leaning, ban_id = _late_article_db()
+        llm = FakeLLM(lambda kind, user: {"candidate_id": ban_id, "relation": relation, "confidence": confidence, "reason": "t"})
+        stats = run_assign(db, llm, SETTINGS, leaning)
+        townhall = next(a for a in db.tables["articles_v3"] if a["outlet"] == "Townhall")
+        assert townhall["story_id"] == ban_id, (relation, confidence)
+        assert stats["orphaned"] == 0
+
+
+def test_confident_follow_up_is_split_off():
+    db, leaning, ban_id = _late_article_db()
+    llm = FakeLLM(lambda kind, user: {"candidate_id": ban_id, "relation": "follow_up", "confidence": 0.66, "reason": "t"})
+    run_assign(db, llm, SETTINGS, leaning)
+    townhall = next(a for a in db.tables["articles_v3"] if a["outlet"] == "Townhall")
+    assert townhall["story_id"] != ban_id  # opinion cannot create a story: orphaned until its follow-up story exists
+
+
+def test_verifier_can_redirect_to_the_follow_up_story_that_already_exists():
+    from pipeline.cluster import verify_candidates
+    ban, suit = _story(id="ban"), _story(id="suit", title="Outlets sue Trump over ban", summary="CNN, MS NOW, Politico sued.")
+    llm = FakeLLM(lambda kind, user: {"candidate_id": "suit", "relation": "same_development", "confidence": 0.8, "reason": "t"})
+    chosen, _ = verify_candidates(llm, SETTINGS, _art(), [ban, suit], keep_id="ban")
+    assert chosen["id"] == "suit"
+
+
+def test_gray_zone_still_needs_an_affirmative_match():
+    from pipeline.cluster import verify_candidates
+    weak = _story(id="weak")
+    unsure = FakeLLM(lambda kind, user: {"candidate_id": "weak", "relation": "same_development", "confidence": 0.5, "reason": "t"})
+    assert verify_candidates(unsure, SETTINGS, _art(), [weak])[0] is None           # weak similarity + unsure -> new story
+    sure = FakeLLM(lambda kind, user: {"candidate_id": "weak", "relation": "same_development", "confidence": 0.8, "reason": "t"})
+    assert verify_candidates(sure, SETTINGS, _art(), [weak])[0]["id"] == "weak"
+
+
+def test_recheck_keeps_members_unless_confidently_new():
+    db, leaning = _ban_db()
+    ban = db.tables["stories"][0]
+    db.insert("articles_v3", [
+        article("Daily Beast", "hp", "Trump Humiliated by Giant Crowd", [1, 0.02, 0], None, atype="opinion",
+                published="2026-09-21T12:00:00+00:00", story_id=ban["id"], side="left",
+                assignment={"method": "threshold"}, assigned_at="t"),
+    ])
+    ban["article_count"] = 3
+    llm = FakeLLM(lambda kind, user: {"candidate_id": ban["id"], "relation": "follow_up", "confidence": 0.6, "reason": "t"})
+    stats = run_recheck(db, llm, SETTINGS)
+    assert stats["kept"] == 1 and stats["detached"] == 0
