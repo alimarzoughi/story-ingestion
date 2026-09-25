@@ -28,7 +28,7 @@ VERIFY_SCHEMA = {
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-25c.split-guard"
+ASSIGN_RULE = "2026-09-25d.no-return"
 
 VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
@@ -289,9 +289,11 @@ class Assigner:
         if not embedding:
             self.orphan(article, [], "no embedding")
             return
-        candidates = self.candidates_for(article, embedding)
-        decision, chosen, scored = decide(article, candidates, self.settings)
         extra: dict[str, Any] = split_memory(article)
+        # never send a split-off article back to the story it was split from (otherwise recheck detaches it and the
+        # very next assign re-attaches it, run after run)
+        candidates = [c for c in self.candidates_for(article, embedding) if c["id"] != extra.get("split_from")]
+        decision, chosen, scored = decide(article, candidates, self.settings)
         if decision == "verify":
             result = self.verify(article, scored, candidates)
             extra["verifier"] = (result or {}).get("_verifier")

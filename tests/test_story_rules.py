@@ -414,3 +414,22 @@ def test_merge_never_undoes_a_recheck_split():
     llm = FakeLLM(lambda kind, user: {"same_development": True, "confidence": 0.95, "reason": "t"})
     stats = run_merge(db, llm, SETTINGS)
     assert stats["merged"] == 0 and stats["rejected_split"] == 1 and not llm.calls
+
+
+def test_split_article_never_returns_to_its_parent_story():
+    """2026-09-24: Stanford / NIH / Venezuela follow-ups were detached by recheck, re-attached to the same story by
+    the next assign, and detached again by the following recheck. The parent is now excluded from candidates."""
+    from pipeline.cluster import Assigner
+    db = FakeDb()
+    vec = [1.0] + [0.0] * 767
+    from pipeline.db import vec_to_pg
+    db.tables["stories"] = [{"id": "parent", "title": "p", "summary": "p", "centroid": vec_to_pg(vec), "first_seen": "2026-09-22T10:00:00+00:00",
+                             "last_seen": "2026-09-22T12:00:00+00:00", "event_date": "2026-09-22", "article_count": 5, "status": "open",
+                             "key_entities": [], "left_count": 2, "right_count": 3, "center_count": 0}]
+    art = {"id": "a1", "source_id": "s", "outlet": "o", "title": "t", "published_at": "2026-09-22T11:00:00+00:00", "event_summary": "x",
+           "event_date": "2026-09-22", "key_entities": [], "article_type": "news", "is_wire_copy": False, "embedding": vec_to_pg(vec),
+           "assignment": {"method": "detached", "from_story": "parent"}}
+    db.tables["articles_v3"] = [dict(art)]
+    Assigner(db, None, SETTINGS, {}).process(art)
+    row = db.tables["articles_v3"][0]
+    assert row["story_id"] != "parent" and row["assignment"]["split_from"] == "parent"
