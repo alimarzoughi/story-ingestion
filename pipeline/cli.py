@@ -92,8 +92,29 @@ def cmd_assign(args) -> int:
 def cmd_pairs(args) -> int:
     settings = Settings.from_env()
     from .pairs import run_pairs
-    run_pairs(_db(settings), _llm(settings, required=False), settings, lookback_hours=args.lookback_hours, story_id=args.story)
+    db = _db(settings)
+    run_pairs(db, _llm(settings, required=False), settings, lookback_hours=args.lookback_hours, story_id=args.story)
+    refresh_feed(db)
     return 0
+
+
+def refresh_feed(db) -> int:
+    """Rebuild the precomputed feed (feed_stories_cache, schema_patch_003.sql) the site reads.
+
+    Runs last, after pairs. If the function is missing the run fails loudly (red in Actions) instead of the site
+    silently serving a stale feed: all earlier stages have already been saved by then.
+    """
+    try:
+        rows = db.rpc("refresh_feed_stories", {})
+    except RuntimeError as exc:
+        if "PGRST202" in str(exc) or "-> 404" in str(exc):
+            raise SystemExit(
+                "schema_patch_003.sql has not been applied: the database has no refresh_feed_stories() function.\n"
+                "Paste story-based-ingestion/schema_patch_003.sql into the Supabase SQL editor and run it, then retry."
+            ) from exc
+        raise
+    print(f"[feed] refreshed feed_stories_cache: {rows} stories")
+    return int(rows or 0)
 
 
 _NIL_UUID = "00000000-0000-0000-0000-000000000000"
@@ -122,6 +143,7 @@ def cmd_merge(args) -> int:
     db = _db(settings)
     require_patch_002(db)
     run_merge(db, _llm(settings), settings)
+    refresh_feed(db)
     return 0
 
 
@@ -149,6 +171,7 @@ def cmd_recheck(args) -> int:
     run_assign(db, llm, settings, _source_leaning(db), limit=max(settings.assign_batch, stats["detached"] + 100))
     run_merge(db, llm, settings)
     run_pairs(db, llm, settings, lookback_hours=24 * 7)
+    refresh_feed(db)
     print(f"[recheck] finished | {llm.usage_summary()}")
     return 0
 
@@ -181,6 +204,7 @@ def cmd_run(args) -> int:
             print(f"[run] trimmed body_text on {trimmed} articles older than 30 days")
     except Exception as exc:
         print(f"[run] trim_old_bodies failed: {str(exc)[:120]}")
+    refresh_feed(db)
     print(f"[run] finished in {time.time() - started:.0f}s | {llm.usage_summary()}")
     return 0
 

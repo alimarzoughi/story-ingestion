@@ -20,6 +20,18 @@ def pg_to_vec(value: Any) -> list[float] | None:
     return [float(x) for x in json.loads(value)]
 
 
+def strip_nul(value: Any) -> Any:
+    """Postgres text/jsonb can't hold U+0000; a stray NUL in scraped or LLM text made a whole run fail
+    (PATCH articles_v3 -> 400 22P05, 2026-09-27). Remove it from every string in a payload."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {strip_nul(k): strip_nul(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [strip_nul(v) for v in value]
+    return value
+
+
 class Db:
     def __init__(self, base_url: str, api_key: str, timeout: int = 30) -> None:
         self.base = base_url.rstrip("/") + "/rest/v1"
@@ -34,6 +46,8 @@ class Db:
     # -- low level -----------------------------------------------------------
     def _request(self, method: str, path: str, *, params=None, json_body=None, headers=None, retries=3):
         url = f"{self.base}/{path}"
+        if json_body is not None:
+            json_body = strip_nul(json_body)
         last_exc: Exception | None = None
         for attempt in range(retries):
             try:

@@ -5,3 +5,4 @@ beautifulsoup4>=4.12
 pyyaml>=6.0
 openai>=1.50
 curl_cffi>=0.7
+lxml_html_clean>=0.4

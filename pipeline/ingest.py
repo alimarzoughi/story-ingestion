@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -52,9 +53,21 @@ def _make_session(settings: Settings):
 
 
 class Fetcher:
+    """One HTTP session per thread. curl_cffi sessions wrap a libcurl handle that is not thread-safe:
+    sharing one across the fetch pool crashed the run with `free(): invalid pointer` (2026-09-26)."""
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.session, self.impersonating = _make_session(settings)
+        self._local = threading.local()
+        self._local.session, self.impersonating = _make_session(settings)
+
+    @property
+    def session(self):
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session, _ = _make_session(self.settings)
+            self._local.session = session
+        return session
 
     def get(self, url: str, retries: int = 3, *, kind: str = "page"):
         headers = FEED_HEADERS if kind == "feed" else PAGE_HEADERS
