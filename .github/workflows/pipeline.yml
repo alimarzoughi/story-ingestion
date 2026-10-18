@@ -9,7 +9,7 @@ on:
         description: 'Pipeline command'
         type: choice
         default: run
-        options: [run, verify-feeds, ingest, enrich, assign, merge, pairs, status, sync-sources, fix-text, recheck-stories]
+        options: [run, verify-feeds, ingest, enrich, assign, merge, pairs, status, sync-sources, fix-text, recheck-stories, backfill-framing]
 
 concurrency:
   group: pipeline

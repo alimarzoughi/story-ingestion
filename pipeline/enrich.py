@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
+from .framing import ensure_framing
 from .config import Settings
 from .db import Db, vec_to_pg
 from .llm import LLM
@@ -197,6 +198,8 @@ def run_enrich(db: Db, llm: LLM, settings: Settings, *, limit: int | None = None
                                  user=build_user_prompt(article, settings), schema=ENRICH_SCHEMA, schema_name="article_enrichment")
             if not out.get("event_summary"):
                 return article, None, "empty event_summary"
+            if not dry_run:
+                out = ensure_framing(llm, settings, article, out)  # one retry when framing comes back empty
             return article, out, None
         except Exception as exc:
             return article, None, str(exc)

@@ -216,6 +216,16 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_backfill_framing(args) -> int:
+    settings = Settings.from_env()
+    from .framing import backfill_framing
+    db = _db(settings)
+    stats = backfill_framing(db, _llm(settings), settings, days=args.days, dry_run=args.dry_run)
+    if not args.dry_run and stats["filled"]:
+        refresh_feed(db)  # the site reads the precomputed feed
+    return 0
+
+
 def cmd_status(args) -> int:
     settings = Settings.from_env()
     db = _db(settings)
@@ -243,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("merge"); p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("fix-text"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_fix_text)
     p = sub.add_parser("recheck-stories"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--report", help="write every verifier decision to this UTF-8 TSV file"); p.set_defaults(fn=cmd_recheck)
+    p = sub.add_parser("backfill-framing"); p.add_argument("--days", type=int, default=7); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_backfill_framing)
     p = sub.add_parser("run"); p.set_defaults(fn=cmd_run)
     p = sub.add_parser("status"); p.set_defaults(fn=cmd_status)
 
