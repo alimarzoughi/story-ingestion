@@ -104,6 +104,7 @@ def refresh_feed(db) -> int:
     Runs last, after pairs. If the function is missing the run fails loudly (red in Actions) instead of the site
     silently serving a stale feed: all earlier stages have already been saved by then.
     """
+    started = time.time()
     try:
         rows = db.rpc("refresh_feed_stories", {})
     except RuntimeError as exc:
@@ -112,8 +113,14 @@ def refresh_feed(db) -> int:
                 "schema_patch_003.sql has not been applied: the database has no refresh_feed_stories() function.\n"
                 "Paste story-based-ingestion/schema_patch_003.sql into the Supabase SQL editor and run it, then retry."
             ) from exc
+        if "57014" in str(exc):
+            raise SystemExit(
+                f"refresh_feed_stories() hit the database time limit after {time.time() - started:.0f}s; the site keeps "
+                "showing the previous feed until a run gets through.\n"
+                "If this repeats, check that schema_patch_005.sql is applied (it raises the limit for the pipeline's key)."
+            ) from exc
         raise
-    print(f"[feed] refreshed feed_stories_cache: {rows} stories")
+    print(f"[feed] refreshed feed_stories_cache: {rows} stories ({time.time() - started:.1f}s)")
     return int(rows or 0)
 
 

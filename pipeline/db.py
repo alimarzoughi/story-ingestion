@@ -33,6 +33,11 @@ def strip_nul(value: Any) -> Any:
 
 
 class Db:
+    # Database functions (close_stale_stories, refresh_feed_stories, merge_stories...) can run longer than a plain
+    # read. The server-side limit for the service key is set in schema_patch_005.sql (60 s); wait a bit longer than
+    # that so the database, not this client, decides when a call has taken too long.
+    RPC_TIMEOUT = 90
+
     def __init__(self, base_url: str, api_key: str, timeout: int = 30) -> None:
         self.base = base_url.rstrip("/") + "/rest/v1"
         self.timeout = timeout
@@ -44,7 +49,7 @@ class Db:
         self.session.headers.update(headers)
 
     # -- low level -----------------------------------------------------------
-    def _request(self, method: str, path: str, *, params=None, json_body=None, headers=None, retries=3):
+    def _request(self, method: str, path: str, *, params=None, json_body=None, headers=None, retries=3, timeout=None):
         url = f"{self.base}/{path}"
         if json_body is not None:
             json_body = strip_nul(json_body)
@@ -52,7 +57,7 @@ class Db:
         for attempt in range(retries):
             try:
                 resp = self.session.request(
-                    method, url, params=params, json=json_body, headers=headers, timeout=self.timeout
+                    method, url, params=params, json=json_body, headers=headers, timeout=timeout or self.timeout
                 )
                 if resp.status_code in (429, 502, 503, 504) and attempt < retries - 1:
                     time.sleep(1.5 * (attempt + 1))
@@ -93,7 +98,7 @@ class Db:
         return self._request("PATCH", table, params=filters, json_body=payload, headers={"Prefer": prefer}) or []
 
     def rpc(self, name: str, payload: dict) -> Any:
-        return self._request("POST", f"rpc/{name}", json_body=payload)
+        return self._request("POST", f"rpc/{name}", json_body=payload, timeout=self.RPC_TIMEOUT)
 
     def count(self, table: str, **filters: str) -> int:
         url = f"{self.base}/{table}"

@@ -79,10 +79,10 @@
   outlet: The Washington Post
   leaning: LEAN_LEFT
   section: politics
-  feed_url: https://feeds.washingtonpost.com/rss/politics
+  feed_url: https://www.washingtonpost.com/arcio/rss/category/politics/
   homepage: https://www.washingtonpost.com
   verified: true
-  notes: audit #3 (curl_cffi) - 2/3 bodies (metered paywall); enabled, expect some skipped rows
+  notes: audit #3 (curl_cffi) - 2/3 bodies (metered paywall); enabled, expect some skipped rows. 2026-10-18 old feed (feeds.washingtonpost.com/rss/politics) dead with HTTP 502 since ~10-16; arcio politics feed checked live in a browser
   enabled: true
 
 # ---------------------------------------------------------------- CENTER

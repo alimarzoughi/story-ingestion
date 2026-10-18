@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -345,10 +346,21 @@ def run_assign(db: Db, llm: LLM | None, settings: Settings, source_leaning: dict
         assigner.stats["processed"] += 1
     s = assigner.stats
     print(f"[assign] processed={s['processed']} attached={s['attached']} (via verifier {s['verifier_attached']}/{s['verified']}) created={s['created']} orphaned={s['orphaned']} orphan_retries={s['orphan_retries']} failed={s['failed']}")
-    closed = db.rpc("close_stale_stories", {"older_than": "5 days"})
-    if closed:
-        print(f"[assign] closed {closed} stale stories")
+    close_stale(db)
     return s
+
+
+def close_stale(db: Db) -> int:
+    """Close stories with no new article for 5 days. Housekeeping only: if it fails (2026-10-16..18 it hit the
+    database time limit), say so and carry on; the next run closes whatever is still stale."""
+    started = time.time()
+    try:
+        closed = db.rpc("close_stale_stories", {"older_than": "5 days"}) or 0
+    except Exception as exc:
+        print(f"[assign] close_stale_stories failed after {time.time() - started:.1f}s (next run retries): {str(exc)[:200]}")
+        return 0
+    print(f"[assign] closed {closed} stale stories ({time.time() - started:.1f}s)")
+    return int(closed)
 
 
 # ---------------------------------------------------------------------------

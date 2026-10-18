@@ -65,3 +65,35 @@ def test_refresh_feed_missing_patch_fails_loudly():
     db = _RpcDb(error='POST rpc/refresh_feed_stories -> 404: {"code":"PGRST202"}')
     with pytest.raises(SystemExit, match="schema_patch_003"):
         refresh_feed(db)
+
+
+# 2026-10-16..18: close_stale_stories / refresh_feed_stories hit Supabase's 8 s limit for the service key (57014)
+TIMEOUT = 'POST rpc/close_stale_stories -> 500: {"code":"57014","message":"canceling statement due to statement timeout"}'
+
+
+def test_close_stale_failure_does_not_stop_the_run(capsys):
+    from pipeline.cluster import close_stale
+    assert close_stale(_RpcDb(error=TIMEOUT)) == 0
+    assert "close_stale_stories failed" in capsys.readouterr().out
+    assert close_stale(_RpcDb(result=7)) == 7
+
+
+def test_refresh_feed_timeout_explains_itself():
+    import pytest
+    from pipeline.cli import refresh_feed
+    with pytest.raises(SystemExit, match="time limit"):
+        refresh_feed(_RpcDb(error=TIMEOUT.replace("close_stale_stories", "refresh_feed_stories")))
+
+
+def test_rpc_waits_longer_than_plain_requests(monkeypatch):
+    db = Db("https://example.supabase.co", "sb_secret_x")
+    seen = []
+
+    class Resp:
+        status_code = 204
+        content = b""
+
+    monkeypatch.setattr(db.session, "request", lambda method, url, **kw: seen.append(kw["timeout"]) or Resp())
+    db.rpc("close_stale_stories", {})
+    db.update("stories", {"id": "eq.1"}, {"title": "x"})
+    assert seen == [Db.RPC_TIMEOUT, 30]
