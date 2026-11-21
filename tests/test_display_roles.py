@@ -245,24 +245,6 @@ def test_run_and_merge_refuse_to_start_without_patch_006():
     require_patch_006(FakeDb())
 
 
-def test_gold_scoring_script(tmp_path, capsys):
-    from eval.score_gold import main
-    gold = tmp_path / "gold.tsv"
-    gold.write_text("story_id\tstory_title\tarticle_id\toutlet\tdate\theadline\tlabel\tnote\n"
-                    "s\tt\ta1\tCBS\td\tHuang resigns\tOn event\tn\n"
-                    "s\tt\ta2\tWaPo\td\tScandal hits Trump\tRelated\tn\n"
-                    "s\tt\ta3\tNYP\td\tThird affair\tSeparate\tn\n", encoding="utf-8")
-    report = tmp_path / "r.tsv"
-    report.write_text("story_id\tstory_title_before\tstory_anchor\tarticle_id\toutlet\tpublished_at\theadline\trelation\t"
-                      "confidence\tdecision\trole\treason\n"
-                      "s\tt\tt\ta1\tCBS\tp\th\tsame_development\t0.9\tkept\tdirect_report\tr\n"
-                      "s\tt\tt\ta2\tWaPo\tp\th\tsame_development\t0.9\tkept\tdirect_report\tr\n"
-                      "s\tt\tt\ta3\tNYP\tp\th\tfollow_up\t0.9\tdetached\t\tr\n", encoding="utf-8")
-    assert main(str(report), str(gold)) == 0
-    out = capsys.readouterr().out
-    assert "exact agreement 2/3" in out and "shown but not on the event (what readers would still see wrongly): 1" in out
-
-
 def test_select_all_pages_past_supabases_1000_row_cap():
     from pipeline.db import Db
 

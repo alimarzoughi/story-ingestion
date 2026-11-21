@@ -31,8 +31,8 @@ build/
 local/
 .agents/
 
-# working notes / scraped data
-eval/seed.csv
+# laptop-only evaluation files (gold labels, scoring script): live in local/eval/
+eval/
 
 # private operating docs
 AGENTS.md
