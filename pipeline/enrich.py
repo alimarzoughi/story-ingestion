@@ -7,10 +7,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from .extract import make_snippet
 from .framing import ensure_framing
 from .config import Settings
 from .db import Db, vec_to_pg
 from .llm import LLM
+from .textclean import body_matches_page, clean_text
 
 CATEGORIES = ["politics", "world", "economy", "business", "technology", "health", "science", "climate",
               "crime", "courts", "immigration", "education", "culture", "sports", "other"]
@@ -27,7 +29,6 @@ ENRICH_SCHEMA: dict[str, Any] = {
         "article_type": {"type": "string", "enum": ARTICLE_TYPES},
         "event_summary": {"type": "string", "description": "1-2 neutral sentences (max 45 words) stating this article's main point: the specific development its headline and opening report (who did what). Earlier events it recaps belong in background, not here. Mention place or date only when they are essential to identifying the event. No evaluative adjectives, no outlet voice, no filler like 'the incident occurred'."},
         "background": {"type": ["string", "null"], "description": "Earlier events the article recaps for context (max 25 words), or null."},
-        "text_matches_headline": {"type": "boolean", "description": "False only when the article text is about a different subject than the headline, or is site navigation/boilerplate rather than the article (a scraping error)."},
         "event_date": {"type": ["string", "null"], "description": "YYYY-MM-DD of the development in event_summary, or null if none is identifiable."},
         "event_date_confidence": {"type": "number"},
         "key_entities": {"type": "array", "items": {"type": "string"}, "description": "3-6 canonical full names of the people, organisations, places or works CENTRAL to the story, most central first (e.g. 'Donald Trump' not 'Trump'; 'Maria Elvira Salazar'). Exclude generic institutions and countries unless they are the actor (no 'United States', 'Congress', 'White House', 'DHS'), exclude news outlets, adjectives and pronouns."},
@@ -62,7 +63,7 @@ ENRICH_SCHEMA: dict[str, Any] = {
             "required": ["headline_terms", "date_strings"],
         },
     },
-    "required": ["category", "article_type", "event_summary", "background", "text_matches_headline", "event_date", "event_date_confidence", "key_entities",
+    "required": ["category", "article_type", "event_summary", "background", "event_date", "event_date_confidence", "key_entities",
                  "leaning", "stance", "loaded_terms", "is_wire_copy", "wire_copy_evidence", "evidence"],
 }
 
@@ -71,7 +72,6 @@ Rules:
 - event_summary states THIS article's main point: the specific development its headline and opening report (who did what), neutral and outlet-agnostic, so that two outlets reporting that same development would produce near-identical summaries. Lead with that development, never with an earlier event the article recaps: a piece headlined "Third affair comes to light after CEO quits" is about the third affair, not the resignation; "Company posts record earnings after CEO's exit" is about the earnings. Put recapped earlier events in background. Max 45 words. Include place/date only when essential to identify the event; never pad with 'the incident occurred in...'. No opinion, adjectives, or speculation.
 - For opinion/analysis, state the specific development the piece is about (as named in its headline or opening), not the author's argument. If it is about a broad topic rather than one development, say so plainly ("Commentary on ...") instead of borrowing a development from the background.
 - article_type: news reports a development; analysis explains or interprets it (takeaways, what it means, why it happened); opinion argues a view. A piece built around implications is analysis even when it runs in a news section.
-- text_matches_headline: the article text is scraped and can occasionally be the wrong page (another article, or site navigation). If the text is about a different subject than the headline, set it false and write event_summary, event_date and key_entities from the headline and subheadline only. Punny or vague headlines are not a mismatch.
 - event_date is the date of the development in event_summary, resolved from the publish timestamp when the text says 'Tuesday', 'yesterday', etc. Never the date of a recapped earlier event or of a scheduled future one. Null if the piece has no single central development.
 - key_entities: 3-6 canonical full names, most central first. No generic institutions or countries unless they are the actor, no outlets.
 - leaning classifies the article's own framing (word choice, emphasis, who is blamed or credited), not the topic and not the outlet. Straight, balanced reporting is CENTER. Use confidence honestly; low confidence is fine.
@@ -81,8 +81,14 @@ Rules:
 Return only JSON matching the schema."""
 
 
+def text_matches(article: dict) -> bool:
+    return body_matches_page(display_headline(article), article.get("body_text"), article.get("subheadline"))
+
+
 def build_user_prompt(article: dict, settings: Settings) -> str:
-    body = (article.get("body_text") or "")[: settings.body_chars_for_llm]
+    # a scraped body that belongs to another page would be summarised instead of this article
+    body = ((article.get("body_text") or "")[: settings.body_chars_for_llm] if text_matches(article)
+            else "(not available: the scraped page text was about something else; use the headline and subheadline)")
     return (
         f"Outlet: {article.get('outlet')}\n"
         f"Published at (UTC): {article.get('published_at')}\n"
@@ -183,9 +189,12 @@ def enrichment_to_patch(article: dict, out: dict, settings: Settings, embedding:
     wire_hint = bool((article.get("evidence") or {}).get("wire_hint"))
     llm_wire = bool(out.get("is_wire_copy")) and bool(WIRE_EVIDENCE_RE.search(str(out.get("wire_copy_evidence") or "")))
     evidence["wire_copy_evidence"] = out.get("wire_copy_evidence")
-    text_ok = out.get("text_matches_headline") is not False
+    text_ok = text_matches(article)
     evidence["text_matches_headline"] = text_ok
-    patch_text = {} if text_ok else {"snippet": article.get("subheadline")}  # the scraped text isn't this article
+    # the card snippet comes from the same scraped text; when that text isn't this article, use the description
+    # (and restore the body snippet for rows a 2026-11-21 nano-based check had wrongly switched)
+    snippet = clean_text(make_snippet(article.get("body_text") or "")) if text_ok else article.get("subheadline")
+    patch_text = {"snippet": snippet} if snippet else {}
     return {
         **patch_text,
         "enrichment_status": "done",

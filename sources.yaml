@@ -61,11 +61,25 @@
   section: politics
   feed_url: http://rss.cnn.com/rss/cnn_allpolitics.rss
   homepage: https://www.cnn.com
-  verified: true   # audit 2026-09-17
+  verified: false  # 2026-11-21: disabled, the feed only carries LendingTree ads now
   notes: >-
+    2026-11-21: every entry for at least 10 days links to lendingtree.com ("You're just minutes away from seeing
+    great offers"), none to cnn.com. Re-check with verify-feeds before re-enabling.
     2026-09-18 production run inserted 0 of 24-29 fresh entries: every article was dropped
     by the stale guard because the CNN page date is older than the feed date. Ingest now
     keeps the fresher of the two; confirm yield on the next run before touching this feed.
+
+- id: nbc-politics
+  outlet: NBC News
+  leaning: LEAN_LEFT
+  section: politics
+  feed_url: https://feeds.nbcnews.com/nbcnews/public/politics
+  homepage: https://www.nbcnews.com
+  verified: true   # 2026-11-21: checked by hand (replaces CNN, whose feeds are dead)
+  notes: >-
+    2026-11-21: feed live (25 items over ~2.5 days, all www.nbcnews.com, all with images; a few /video/ links).
+    Article pages are server-rendered with NewsArticle JSON-LD (headline, datePublished, author, image) and the full
+    body in <p> tags (penny-minting article: 15 paragraphs, 2.9k chars). Confirm yield with verify-feeds.
 
 - id: npr-politics
   outlet: NPR
@@ -494,7 +508,7 @@
   section: entertainment
   feed_url: http://rss.cnn.com/rss/cnn_showbiz.rss
   homepage: https://www.cnn.com
-  verified: true
+  verified: false  # 2026-11-21: CNN RSS frozen since 2022-24 (old items only), never yields fresh articles
   notes: audit #3 - passes; 0 fresh of 30 (stale feed?) watch yield
 
 - id: cnn-us
@@ -503,7 +517,7 @@
   section: us
   feed_url: http://rss.cnn.com/rss/cnn_us.rss
   homepage: https://www.cnn.com
-  verified: true
+  verified: false  # 2026-11-21: CNN RSS frozen since 2022-24 (old items only), never yields fresh articles
   notes: >-
     2026-09-18 production run inserted 0 of 24-29 fresh entries: every article was dropped
     by the stale guard because the CNN page date is older than the feed date. Ingest now
@@ -515,7 +529,7 @@
   section: technology
   feed_url: http://rss.cnn.com/rss/cnn_tech.rss
   homepage: https://www.cnn.com
-  verified: true
+  verified: false  # 2026-11-21: CNN RSS frozen since 2022-24 (old items only), never yields fresh articles
   notes: >-
     2026-09-18 production run inserted 0 of 24-29 fresh entries: every article was dropped
     by the stale guard because the CNN page date is older than the feed date. Ingest now
@@ -527,7 +541,7 @@
   section: health
   feed_url: http://rss.cnn.com/rss/cnn_health.rss
   homepage: https://www.cnn.com
-  verified: true
+  verified: false  # 2026-11-21: CNN RSS frozen since 2022-24 (old items only), never yields fresh articles
   notes: >-
     2026-09-18 production run inserted 0 of 24-29 fresh entries: every article was dropped
     by the stale guard because the CNN page date is older than the feed date. Ingest now

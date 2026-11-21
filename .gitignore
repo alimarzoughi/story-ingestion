@@ -23,6 +23,13 @@ build/
 .idea/
 .vscode/
 
-# local
+# laptop only (never pushed: this repo is public). Tests live in local/tests, evaluation files in local/eval.
 *.log
 local/
+eval/
+.agents/
+.codex-pycache/
+
+# private operating docs and database scripts
+AGENTS.md
+*.sql
