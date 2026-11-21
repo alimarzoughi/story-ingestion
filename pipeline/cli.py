@@ -12,8 +12,12 @@
 
 One-off maintenance:
   python -m pipeline.cli fix-text        [--dry-run]   decode HTML entities left in stored titles/snippets
-  python -m pipeline.cli recheck-stories [--dry-run]   re-apply the follow-up rule to existing stories, then
-                                                       re-assign detached articles, merge duplicates, rebuild pairs
+  python -m pipeline.cli reenrich        [--days 5] [--limit N] [--dry-run]
+                                                       re-enrich recent articles under the current prompt (resumable),
+                                                       then re-anchor open stories and recompute their centroids
+  python -m pipeline.cli recheck-stories [--dry-run] [--report FILE]
+                                                       re-verify the members of visible stories (follow-ups + display
+                                                       roles), then re-assign detached articles, merge, rebuild pairs
 """
 from __future__ import annotations
 
@@ -144,11 +148,25 @@ def require_patch_002(db) -> None:
         raise
 
 
+def require_patch_006(db) -> None:
+    """Fail fast if schema_patch_006.sql (display roles in the feed, stories.merge_check) has not been applied."""
+    try:
+        db.select("stories", select="merge_check", limit="1")
+    except RuntimeError as exc:
+        if "42703" in str(exc) or "merge_check" in str(exc):
+            raise SystemExit(
+                "schema_patch_006.sql has not been applied: stories.merge_check is missing.\n"
+                "Paste story-based-ingestion/schema_patch_006.sql into the Supabase SQL editor and run it, then retry."
+            ) from exc
+        raise
+
+
 def cmd_merge(args) -> int:
     settings = Settings.from_env()
     from .merge import run_merge
     db = _db(settings)
     require_patch_002(db)
+    require_patch_006(db)
     run_merge(db, _llm(settings), settings)
     refresh_feed(db)
     return 0
@@ -161,6 +179,16 @@ def cmd_fix_text(args) -> int:
     return 0
 
 
+def cmd_reenrich(args) -> int:
+    settings = Settings.from_env()
+    from .maintenance import reenrich
+    db = _db(settings)
+    if not args.dry_run:
+        require_patch_002(db)  # recomputes centroids with refresh_story_stats
+    reenrich(db, _llm(settings), settings, days=args.days, limit=args.limit, dry_run=args.dry_run)
+    return 0
+
+
 def cmd_recheck(args) -> int:
     settings = Settings.from_env()
     from .cluster import run_assign, run_recheck
@@ -169,6 +197,7 @@ def cmd_recheck(args) -> int:
     db, llm = _db(settings), _llm(settings)
     if not args.dry_run:
         require_patch_002(db)  # never detach articles if the stats/merge functions are missing
+        require_patch_006(db)
     stats = run_recheck(db, llm, settings, dry_run=args.dry_run, report_path=args.report)
     if args.dry_run:
         print(f"[recheck] dry run finished | {llm.usage_summary()}")
@@ -194,6 +223,7 @@ def cmd_run(args) -> int:
 
     started = time.time()
     db = _db(settings)
+    require_patch_006(db)
     llm = _llm(settings)
     sources = load_sources(args.sources)
     sync_sources(db, sources)
@@ -252,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pairs"); p.add_argument("--lookback-hours", type=int); p.add_argument("--story"); p.set_defaults(fn=cmd_pairs)
     p = sub.add_parser("merge"); p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("fix-text"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_fix_text)
+    p = sub.add_parser("reenrich"); p.add_argument("--days", type=int, default=5); p.add_argument("--limit", type=int); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_reenrich)
     p = sub.add_parser("recheck-stories"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--report", help="write every verifier decision to this UTF-8 TSV file"); p.set_defaults(fn=cmd_recheck)
     p = sub.add_parser("backfill-framing"); p.add_argument("--days", type=int, default=7); p.add_argument("--dry-run", action="store_true"); p.set_defaults(fn=cmd_backfill_framing)
     p = sub.add_parser("run"); p.set_defaults(fn=cmd_run)

@@ -119,9 +119,22 @@ def test_followup_lawsuit_becomes_its_own_story_but_reactions_stay():
     assert "MAIN POINT" in __import__("pipeline.cluster", fromlist=["x"]).VERIFY_SYSTEM
 
 
+def visible(db, *story_ids):
+    """Recheck only covers stories readers can see (a current pair)."""
+    for sid in story_ids:
+        db.tables["story_pairs"].append({"id": f"p-{sid}", "story_id": sid, "is_current": True,
+                                         "left_article_id": None, "right_article_id": None})
+    return db
+
+
+def recheck(db, llm, **kw):
+    return run_recheck(db, llm, SETTINGS, days=None, **kw)
+
+
 def test_recheck_detaches_followups_attached_under_the_old_rule():
     db, leaning = _ban_db()
     ban = db.tables["stories"][0]
+    visible(db, ban["id"])
     old_rule = {"method": "threshold"}  # attached before the main-point rule existed
     db.insert("articles_v3", [
         article("Daily Wire", "dw", "Waltz says Trump was spot on banning CNN", [1, 0.02, 0], None,
@@ -137,10 +150,10 @@ def test_recheck_detaches_followups_attached_under_the_old_rule():
     llm = FakeLLM(lambda kind, user: {"candidate_id": ban["id"], "confidence": 0.9, "reason": "t",
                                       "relation": "follow_up" if "sue" in user.split("Headline: ")[1].split("\n")[0] else "same_development"})
     ban["article_count"] = 4
-    dry = run_recheck(db, llm, SETTINGS, dry_run=True)
+    dry = recheck(db, llm, dry_run=True)
     assert dry["detached"] == 1 and all(a.get("story_id") == ban["id"] for a in members)  # dry run writes nothing
 
-    stats = run_recheck(db, llm, SETTINGS)
+    stats = recheck(db, llm)
     assert stats == {**stats, "kept": 1, "detached": 1}
     sued = next(a for a in db.tables["articles_v3"] if a["title"].startswith("Outlets sue"))
     assert sued["story_id"] is None and sued["assigned_at"] is None and sued["assignment"]["from_story"] == ban["id"]
@@ -149,7 +162,7 @@ def test_recheck_detaches_followups_attached_under_the_old_rule():
     assert ("refresh_story_stats", {"target": ban["id"]}) in db.rpc_calls
     assert ban["article_count"] == 3
     # a second recheck has nothing left to do
-    assert run_recheck(db, llm, SETTINGS)["suspects"] == 0
+    assert recheck(db, llm)["suspects"] == 0
 
 
 # ---------------------------------------------------------------- merge
@@ -292,6 +305,7 @@ def test_gray_zone_still_needs_an_affirmative_match():
 def test_recheck_keeps_members_unless_confidently_new():
     db, leaning = _ban_db()
     ban = db.tables["stories"][0]
+    visible(db, ban["id"])
     db.insert("articles_v3", [
         article("Daily Beast", "hp", "Trump Humiliated by Giant Crowd", [1, 0.02, 0], None, atype="opinion",
                 published="2026-09-21T12:00:00+00:00", story_id=ban["id"], side="left",
@@ -299,7 +313,7 @@ def test_recheck_keeps_members_unless_confidently_new():
     ])
     ban["article_count"] = 3
     llm = FakeLLM(lambda kind, user: {"candidate_id": ban["id"], "relation": "follow_up", "confidence": 0.6, "reason": "t"})
-    stats = run_recheck(db, llm, SETTINGS)
+    stats = recheck(db, llm)
     assert stats["kept"] == 1 and stats["detached"] == 0
 
 
@@ -323,6 +337,7 @@ DRIFTED = "President bans several outlets from White House; media sue over acces
 def _drifted_story_db():
     db, leaning = _ban_db()
     ban = db.tables["stories"][0]
+    visible(db, ban["id"])
     founder = next(a for a in db.tables["articles_v3"] if a["story_id"] == ban["id"] and a["assignment"]["method"] == "create")
     ban.update(title=DRIFTED, summary=DRIFTED, title_source="llm", article_count=4)
     db.insert("articles_v3", [
@@ -354,13 +369,13 @@ def test_founding_article_is_the_earliest_creator():
 
 def test_recheck_reanchors_a_drifted_summary_and_splits_the_merged_in_follow_up():
     db, ban, founder, llm = _drifted_story_db()
-    dry = run_recheck(db, llm, SETTINGS, dry_run=True)
+    dry = recheck(db, llm, dry_run=True)
     assert dry["reanchored"] == 1 and dry["detached"] == 1
     assert ban["summary"] == DRIFTED  # dry run writes nothing
     # the verifier saw the founder's summary, not the drifted one that mentions the lawsuit
     assert all(DRIFTED not in user for _, user in llm.calls)
 
-    stats = run_recheck(db, llm, SETTINGS)
+    stats = recheck(db, llm)
     assert stats["detached"] == 1 and stats["kept"] == 1
     assert ban["summary"] == founder["event_summary"] and ban["title_source"] == "auto"
     sued = next(a for a in db.tables["articles_v3"] if a["title"].startswith("CNN, MS NOW and Politico will sue"))
@@ -396,7 +411,7 @@ def test_founder_is_the_first_news_report_not_a_merged_in_creator():
 def test_recheck_report_lists_every_decision(tmp_path):
     db, ban, founder, llm = _drifted_story_db()
     path = tmp_path / "report.tsv"
-    run_recheck(db, llm, SETTINGS, dry_run=True, report_path=str(path))
+    recheck(db, llm, dry_run=True, report_path=str(path))
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith("story_id\tstory_title_before") and len(lines) == 3  # header + 2 checked articles
     assert any("\tdetached\t" in l for l in lines) and any("\tkept\t" in l for l in lines)

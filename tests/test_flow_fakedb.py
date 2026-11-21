@@ -17,9 +17,12 @@ class FakeDb:
     @staticmethod
     def _match(row, key, cond):
         op, _, val = cond.partition(".")
-        if "->>" in key:  # PostgREST JSON field filter, e.g. assignment->>method
-            col, _, field = key.partition("->>")
-            v = (row.get(col) or {}).get(field)
+        if "->>" in key:  # PostgREST JSON field filter, e.g. assignment->>method, assignment->verifier->>relation
+            path, _, field = key.partition("->>")
+            v = row
+            for part in path.split("->"):
+                v = (v or {}).get(part)
+            v = (v or {}).get(field)
         else:
             v = row.get(key)
         if op == "eq":
@@ -32,6 +35,8 @@ class FakeDb:
             return v is not None and str(v) > val if not isinstance(v, (int, float)) else v > float(val)
         if op == "in":
             return str(v) in val.strip("()").split(",")
+        if op == "neq":
+            return v is not None and str(v) != val
         raise NotImplementedError(op)
 
     def select(self, table, **params):
@@ -46,6 +51,9 @@ class FakeDb:
         if "limit" in params:
             rows = rows[: int(params["limit"])]
         return [dict(r) for r in rows]
+
+    def select_all(self, table, **params):
+        return self.select(table, **params)
 
     def insert(self, table, rows, **kw):
         rows = rows if isinstance(rows, list) else [rows]

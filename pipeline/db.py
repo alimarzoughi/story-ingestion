@@ -76,6 +76,16 @@ class Db:
     def select(self, table: str, **params: Any) -> list[dict]:
         return self._request("GET", table, params=params) or []
 
+    def select_all(self, table: str, page: int = 1000, **params: Any) -> list[dict]:
+        """Every matching row. Supabase answers at most 1,000 rows per request (there are ~1,800 open stories)."""
+        params.setdefault("order", "id.asc")
+        rows: list[dict] = []
+        while True:
+            batch = self.select(table, **params, limit=str(page), offset=str(len(rows)))
+            rows.extend(batch)
+            if len(batch) < page:
+                return rows
+
     def select_in(self, table: str, column: str, values: list[str], select: str = "*", chunk: int = 100) -> list[dict]:
         rows: list[dict] = []
         for i in range(0, len(values), chunk):

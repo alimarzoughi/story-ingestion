@@ -37,7 +37,7 @@ class Settings:
     reasoning_effort: str | None = None          # gpt-5* models ('minimal' by default)
     verify_reasoning_effort: str | None = None   # gpt-6* models (default 'low'; gpt-6 has no 'minimal')
     verify_fallback_model: str | None = "gpt-5-mini"  # used if the verify model errors after retries
-    prompt_version: str = "2026-09-17.2"
+    prompt_version: str = "2026-11-21.1"  # main-point summaries, text check, plausible dates
     # ingest
     fetch_concurrency: int = 8
     feed_max_age_hours: int = 72                 # ignore feed entries older than this
@@ -45,8 +45,8 @@ class Settings:
     fetch_impersonate: str = "chrome"            # curl_cffi target; "none" to use plain requests
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
     # enrich
-    enrich_concurrency: int = 4
-    enrich_batch: int = 200
+    enrich_concurrency: int = 6
+    enrich_batch: int = 400
     body_chars_for_llm: int = 4000
     # cluster
     attach_threshold: float = 0.83
@@ -93,8 +93,8 @@ class Settings:
             fetch_concurrency=int(_env("FETCH_CONCURRENCY", "8")),
             feed_max_age_hours=int(_env("FEED_MAX_AGE_HOURS", "72")),
             fetch_impersonate=_env("FETCH_IMPERSONATE", "chrome"),
-            enrich_concurrency=int(_env("ENRICH_CONCURRENCY", "4")),
-            enrich_batch=int(_env("ENRICH_BATCH", "200")),
+            enrich_concurrency=int(_env("ENRICH_CONCURRENCY", "6")),
+            enrich_batch=int(_env("ENRICH_BATCH", "400")),
             attach_threshold=float(_env("ATTACH_THRESHOLD", "0.83")),
             verify_threshold=float(_env("VERIFY_THRESHOLD", "0.66")),
             candidate_window_hours=int(_env("CANDIDATE_WINDOW_HOURS", "96")),

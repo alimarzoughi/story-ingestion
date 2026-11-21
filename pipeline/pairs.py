@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
+from .cluster import ELIGIBLE_ROLES, role_of
 from .config import Settings
 from .db import Db
 from .llm import LLM
@@ -113,9 +114,21 @@ def _ts(value: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def lead_pool(members: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Members that may lead, per side. Only direct reports and reactions may be shown as the story (assignment.role);
+    when both sides have a direct report the lead pair is two direct reports, so a story titled "Huang resigns" leads
+    with resignation reports rather than with commentary about the wider scandal."""
+    shown = [m for m in members if displayable(m) and role_of(m) in ELIGIBLE_ROLES]
+    for roles in (("direct_report",), ELIGIBLE_ROLES):
+        lefts = [m for m in shown if m.get("side") == "left" and role_of(m) in roles]
+        rights = [m for m in shown if m.get("side") == "right" and role_of(m) in roles]
+        if lefts and rights:
+            return lefts, rights
+    return [], []
+
+
 def best_pair(members: list[dict], settings: Settings, current: dict | None) -> tuple[dict, dict, float, str, dict] | None:
-    lefts = [m for m in members if m.get("side") == "left" and displayable(m)]
-    rights = [m for m in members if m.get("side") == "right" and displayable(m)]
+    lefts, rights = lead_pool(members)
     if not lefts or not rights:
         return None
     current_outlets = None
@@ -134,7 +147,7 @@ def best_pair(members: list[dict], settings: Settings, current: dict | None) -> 
     return best
 
 
-MEMBER_SELECT = "id,outlet,source_id,title,headline,snippet,image_url,published_at,article_type,stance,side,is_wire_copy,loaded_terms,event_summary"
+MEMBER_SELECT = "id,outlet,source_id,title,headline,snippet,image_url,published_at,article_type,stance,side,is_wire_copy,loaded_terms,event_summary,assignment"
 
 
 def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: int | None = None, story_id: str | None = None) -> dict:
@@ -145,7 +158,7 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
         params["id"] = f"eq.{story_id}"
     else:
         params["updated_at"] = f"gte.{since}"
-    stories = db.select("stories", **params)
+    stories = db.select_all("stories", **params)
     stats["stories"] = len(stories)
 
     for story in stories:
@@ -154,8 +167,10 @@ def run_pairs(db: Db, llm: LLM | None, settings: Settings, *, lookback_hours: in
                              story_id=f"eq.{story['id']}", is_current="eq.true")
         current = None
         if existing:
-            by_id = {m["id"]: m for m in members}
-            l, r = by_id.get(existing[0]["left_article_id"]), by_id.get(existing[0]["right_article_id"])
+            # the current pair only gets its stability bonus while both articles may still lead: one that a recheck
+            # has since labelled related (or that lost out to direct reports) gives up its slot at once
+            pool = {m["id"]: m for side in lead_pool(members) for m in side}
+            l, r = pool.get(existing[0]["left_article_id"]), pool.get(existing[0]["right_article_id"])
             if l and r:
                 current = {**existing[0], "left_outlet": l["outlet"], "right_outlet": r["outlet"]}
         choice = best_pair(members, settings, current)

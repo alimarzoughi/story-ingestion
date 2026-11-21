@@ -22,29 +22,48 @@ VERIFY_SCHEMA = {
         "relation": {"type": "string", "enum": ["same_development", "follow_up", "unrelated"],
                      "description": "How the article's main point relates to that candidate's development."},
         "confidence": {"type": "number", "description": "0-1: how confident you are in the relation you chose."},
+        "role": {"type": "string", "enum": ["direct_report", "direct_reaction", "related", "mixed"],
+                 "description": "How the article's main point relates to the chosen candidate's development."},
         "reason": {"type": "string"},
     },
-    "required": ["candidate_id", "relation", "confidence", "reason"],
+    "required": ["candidate_id", "relation", "confidence", "role", "reason"],
 }
+
+# What an article can be shown as (assignment.role). Membership stays lenient (same by default) so commentary has a
+# home; only direct reports and reactions may lead, fill the carousel or count toward the feed rank (pairs.py,
+# schema_patch_006.sql). Articles attached without a verifier call (early, near-identical coverage) and story founders
+# are direct reports; rows from before roles existed count as direct reports until rechecked.
+ROLES = ("direct_report", "direct_reaction", "related", "mixed")
+ELIGIBLE_ROLES = ("direct_report", "direct_reaction")
+
+
+def role_of(article: dict) -> str:
+    return (article.get("assignment") or {}).get("role") or "direct_report"
 
 # Bumped whenever the attach rule changes; stored on every assignment so `recheck-stories` can skip
 # articles already decided under the current rule.
-ASSIGN_RULE = "2026-09-25d.no-return"
+ASSIGN_RULE = "2026-11-21.roles"
 
-VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to.
-A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Russian missile strike on Kyiv on Sept 23'). It is never a broad topic or ongoing saga ('Trump vs the press', 'War in Ukraine').
+VERIFY_SYSTEM = """You decide which story, if any, a news article belongs to, and what role it can play in that story.
+A story is ONE specific development: a single concrete event, action, announcement or disclosure (e.g. 'Trump bans CNN, MS NOW and Politico from the White House', 'Nvidia CEO Jensen Huang resigns'). It is never a broad topic or ongoing saga ('Trump vs the press', 'the Nvidia scandal').
 
-The article belongs to a candidate story only if the article's MAIN POINT (what its headline and opening are about) is that story's development.
-SAME story: other outlets reporting the development; reactions, statements, criticism or defences of it; analysis and opinion about it, including op-eds arguing for or against it; the action simply being carried out (e.g. reporters turned away once a ban takes effect); new details about the same development. Commentary and reaction pieces (how a speech, ad, poll or decision was received, what critics or supporters said about it) belong to that development's story even when their angle or tone is new.
-DIFFERENT story (a follow-up): the article's main point is a NEW development that grows out of the original, e.g. the banned outlets filing a lawsuit, a court ruling, a retaliation, a resignation, a vote on a response, an investigation opening. This holds even when the article recaps the original development at length.
-Examples: 'Trump bans three outlets' vs 'Outlets sue Trump over the ban' -> DIFFERENT. 'Trump bans three outlets' vs 'Fox hosts criticise the ban' -> SAME. 'Israel strikes Tehran on April 3' vs 'Iran retaliates on April 4' -> DIFFERENT. An opinion column about a Senate vote -> SAME as the vote.
-If a candidate is itself the follow-up development the article is about, choose that candidate with relation same_development.
+Judge the article by its MAIN POINT: what its headline and opening report. The neutral summary may recap earlier events; when it and the headline disagree, trust the headline and opening.
 
-Answer with the closest candidate and one relation:
-- same_development: the article's main point is that candidate's development (including any reaction, commentary or analysis of it).
-- follow_up: the article's main point is clearly a NEW action or event that grows out of that candidate's development.
+relation, to the candidate you choose:
+- same_development: the main point is that candidate's development: other outlets reporting it, new details of that same event, the action simply being carried out (reporters turned away once a ban takes effect), reactions, statements, criticism or defences of it, and commentary or analysis about it, even with a new angle or tone.
+- follow_up: the main point is a DIFFERENT specific development, even one that grows out of the candidate and involves the same people: a new revelation or disclosure (another affair, new documents, new allegations), a new action by anyone (a lawsuit, a ruling, an agreement to testify, an investigation opening, an appointment, a firing, a vote, a retaliation), a company's results or earnings, a separate meeting, trip or event. This holds even when the article recaps the candidate at length.
 - unrelated: the article is about something else entirely.
-Choose follow_up only for a genuinely new action or event, never for a new angle, tone or reaction. When torn between same_development and follow_up, choose same_development. Give an honest confidence. Return only JSON."""
+If a candidate is itself the development the article is about, choose that candidate with same_development.
+
+role, for the article in the candidate you choose:
+- direct_report: reports that development itself.
+- direct_reaction: its main point is a reaction to that development: a statement, criticism, defence, commentary or analysis focused on it.
+- related: connected only through the wider topic: a piece about the saga or its broader consequences in which this development is one example or background.
+- mixed: gives roughly equal weight to this development and a different one.
+For follow_up or unrelated, give the role the article would have in a story of its own (usually direct_report).
+
+Examples: 'Trump bans three outlets' vs 'Outlets sue Trump over the ban' -> follow_up. vs 'Fox hosts criticise the ban' -> same_development, direct_reaction. 'Nvidia CEO Jensen Huang resigns' vs 'Third affair comes to light hours after Huang quits' -> follow_up. vs 'Trump pitches Tim Cook to replace Huang' -> same_development, direct_reaction. vs 'Nvidia scandal hits Trump's political vulnerabilities' -> same_development, related. vs 'Nvidia posts record earnings after Huang's exit' -> follow_up. 'Israel strikes Tehran on April 3' vs 'Iran retaliates on April 4' -> follow_up.
+When torn between same_development and follow_up for a reaction or commentary piece, choose same_development. Never choose same_development for a new revelation, action or result just because it involves the same people. Give an honest confidence. Return only JSON."""
 
 
 def _parse_ts(value: str) -> datetime:
@@ -89,7 +108,9 @@ def needs_verification(article: dict, story: dict, settings: Settings) -> str | 
     first_seen = story.get("first_seen")
     if not first_seen:
         return "no_first_seen"
-    if _parse_ts(article["published_at"]) - _parse_ts(first_seen) > timedelta(hours=settings.auto_attach_window_hours):
+    # absolute: an article published BEFORE the story's first report is about something earlier (two stock-drop
+    # pieces from the day before attached to the shareholder-lawsuit story unchecked, Nov 2026)
+    if abs(_parse_ts(article["published_at"]) - _parse_ts(first_seen)) > timedelta(hours=settings.auto_attach_window_hours):
         return "late"
     a, c = _parse_date(article.get("event_date")), _parse_date(story.get("event_date"))
     if a and c and a > c:
@@ -123,41 +144,76 @@ def decide(article: dict, candidates: list[dict], settings: Settings) -> tuple[s
     return "create", None, scored
 
 
-def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: list[dict], *,
-                      keep_id: str | None = None) -> tuple[dict | None, dict]:
-    """Ask the verifier which candidate story the article's main point belongs to.
+def _headline(article: dict) -> str | None:
+    """The headline on the card (feed headline when it differs from the page title)."""
+    return article.get("headline") or article.get("title")
 
-    Returns (chosen candidate or None, raw verifier output). Two modes:
+
+CONTEXT_SELECT = "id,story_id,title,headline,published_at,article_type,is_wire_copy,event_summary"
+
+
+def story_context(db: Db, story_ids: list[str], recent: int = 4) -> dict[str, dict]:
+    """Founding headline + latest member headlines per story, so the verifier sees what a story actually contains,
+    not just its frozen one-line summary."""
+    if not story_ids:
+        return {}
+    rows = db.select("articles_v3", select=CONTEXT_SELECT, story_id=f"in.({','.join(story_ids)})")
+    return {sid: context_from_members([r for r in rows if r.get("story_id") == sid], recent) for sid in story_ids}
+
+
+def context_from_members(members: list[dict], recent: int = 4) -> dict:
+    founder = founding_article(members)
+    latest = sorted((m for m in members if m is not founder), key=lambda m: m["published_at"], reverse=True)
+    return {"founder": _headline(founder) if founder else None, "recent": [_headline(m) for m in latest[:recent]]}
+
+
+def verify_candidates(llm: LLM, settings: Settings, article: dict, candidates: list[dict], *,
+                      keep_id: str | None = None, context: dict[str, dict] | None = None) -> tuple[dict | None, dict]:
+    """Ask the verifier which candidate story the article's main point belongs to, and the article's display role.
+
+    Returns (chosen candidate with its "_role", or None; raw verifier output). Two modes:
     - keep_id=None (gray zone, weak similarity): attach only on an affirmative same_development answer.
     - keep_id=<story id> (strong similarity, or an existing member being rechecked): SAME BY DEFAULT. The article
       stays with keep_id unless the verifier is at least `split_min_confidence` sure it is a follow-up or unrelated.
       Lumping a follow-up in with the original is a smaller error than splitting coverage of the original off
-      (a split-off opinion piece has no story to live in and vanishes from the feed).
+      (a split-off opinion piece has no story to live in and vanishes from the feed). An article kept only by that
+      default gets role "related": it stays a member but is never shown as the story.
     """
     by_id = {c["id"]: c for c in candidates}
-    cand_text = "\n".join(
-        f"- id={c['id']}: {c.get('title')} | {c.get('summary')} (event_date={c.get('event_date')}, first reported={c.get('first_seen') or 'n/a'})"
-        for c in candidates
-    )
+    context = context or {}
+
+    def describe(c: dict) -> str:
+        ctx = context.get(c["id"]) or {}
+        lines = [f"- id={c['id']}: {c.get('title')} | {c.get('summary')} (event_date={c.get('event_date')}, "
+                 f"first reported={c.get('first_seen') or 'n/a'})"]
+        if ctx.get("founder"):
+            lines.append(f"    first report's headline: {ctx['founder']}")
+        if ctx.get("recent"):
+            lines.append("    latest headlines: " + " || ".join(h for h in ctx["recent"] if h))
+        return "\n".join(lines)
+
     user = (
-        f"ARTICLE\nOutlet: {article.get('outlet')}\nPublished: {article.get('published_at')}\nHeadline: {article.get('title')}\n"
+        f"ARTICLE\nOutlet: {article.get('outlet')}\nPublished: {article.get('published_at')}\nHeadline: {_headline(article)}\n"
+        f"Opening: {(article.get('snippet') or 'n/a')[:500]}\n"
         f"Neutral summary of its main development: {article.get('event_summary')}\nEvent date: {article.get('event_date')}\n"
         f"Entities: {', '.join(article.get('key_entities') or [])}\n\n"
-        f"CANDIDATE STORIES\n{cand_text}\n\nWhich candidate is this article closest to, and how does its main point relate to it?"
+        f"CANDIDATE STORIES\n" + "\n".join(describe(c) for c in candidates) +
+        "\n\nWhich candidate is this article closest to, how does its main point relate to it, and what role can it play there?"
     )
     out = llm.structured(kind="verify", model=settings.verify_model, system=VERIFY_SYSTEM, user=user,
-                         schema=VERIFY_SCHEMA, schema_name="story_verification", max_output_tokens=300)
+                         schema=VERIFY_SCHEMA, schema_name="story_verification", max_output_tokens=400)
     relation, cid = out.get("relation"), out.get("candidate_id")
+    role = out.get("role") if out.get("role") in ROLES else "direct_report"
     try:
         confidence = float(out.get("confidence") or 0)
     except (TypeError, ValueError):
         confidence = 0.0
     if relation == "same_development" and cid in by_id and (keep_id is not None or confidence >= 0.6):
-        return by_id[cid], out
+        return {**by_id[cid], "_role": role}, out
     if keep_id is not None:
         if relation in ("follow_up", "unrelated") and confidence >= settings.split_min_confidence:
             return None, out
-        return by_id[keep_id], out  # not confident it is a new development: it stays
+        return {**by_id[keep_id], "_role": "related"}, out  # not confident it is a new development: stays, hidden
     return None, out
 
 
@@ -220,7 +276,9 @@ class Assigner:
         by_id = {c["id"]: c for c in candidates}
         # a strong match that was only sent here because it arrived late / carries a later event date
         keep_id = live[0]["id"] if live and live[0].get("verify_reason") else None
-        chosen, out = verify_candidates(self.llm, self.settings, article, [by_id[x["id"]] for x in live], keep_id=keep_id)
+        context = story_context(self.db, [x["id"] for x in live])
+        chosen, out = verify_candidates(self.llm, self.settings, article, [by_id[x["id"]] for x in live],
+                                        keep_id=keep_id, context=context)
         self.stats["verified"] += 1
         if chosen is not None:
             self.stats["verifier_attached"] += 1
@@ -299,22 +357,24 @@ class Assigner:
             result = self.verify(article, scored, candidates)
             extra["verifier"] = (result or {}).get("_verifier")
             if result and "id" in result:
+                extra["role"] = result.get("_role") or "direct_report"
                 self.attach(article, result, embedding, "verifier", scored, extra)
                 self.stats["attached"] += 1
                 return
             decision = "create"
         if decision == "attach" and chosen:
-            self.attach(article, chosen, embedding, "threshold", scored, extra)
+            # early, near-identical coverage (no verifier call): first-wave straight reports
+            self.attach(article, chosen, embedding, "threshold", scored, {**extra, "role": "direct_report"})
             self.stats["attached"] += 1
             return
         if article.get("article_type") in CREATES_STORIES and not article.get("is_wire_copy"):
-            self.create(article, embedding, scored, extra)
+            self.create(article, embedding, scored, {**extra, "role": "direct_report"})
             self.stats["created"] += 1
         else:
             self.orphan(article, scored, f"{article.get('article_type')}{' wire' if article.get('is_wire_copy') else ''} cannot create a story")
 
 
-ASSIGN_SELECT = "id,source_id,outlet,title,published_at,event_summary,event_date,key_entities,category,article_type,leaning_label,leaning_conf,is_wire_copy,embedding"
+ASSIGN_SELECT = "id,source_id,outlet,title,headline,snippet,published_at,event_summary,event_date,key_entities,category,article_type,leaning_label,leaning_conf,is_wire_copy,embedding"
 
 
 def split_memory(article: dict) -> dict:
@@ -381,8 +441,9 @@ def founding_article(members: list[dict]) -> dict | None:
 
 
 def recheck_suspects(members: list[dict], story: dict, settings: Settings, anchor_id: str | None = None) -> list[dict]:
-    """Members that the current rule would have sent to the verifier but that were never verified under it.
-    Only the founding article is exempt: a story absorbed by a merge brings its own creator, which must be checked."""
+    """Members not yet decided under the current rule: all of them get a verifier call, which both re-applies the
+    follow-up rule and gives each member its display role. Only the founding article is exempt (it is the story's
+    direct report); a story absorbed by a merge brings its own creator, which must be checked."""
     out = []
     for m in members:
         assignment = m.get("assignment") or {}
@@ -390,27 +451,32 @@ def recheck_suspects(members: list[dict], story: dict, settings: Settings, ancho
             continue
         if m["id"] == anchor_id or (anchor_id is None and assignment.get("method") == "create"):
             continue
-        if needs_verification(m, story, settings) is None:
-            continue
         out.append(m)
     return out
 
 
-def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, max_checks: int = 2000,
-                report_path: str | None = None) -> dict:
-    """Detach members whose main point is a follow-up development, so the next assign pass files them correctly.
+def _visible_stories(db: Db, days: int | None = 7) -> list[dict]:
+    """Stories readers can see: a current pair and an article in the last `days` days (the feed's own window)."""
+    paired = {p["story_id"] for p in db.select_all("story_pairs", select="story_id", is_current="eq.true")}
+    recent = {"last_seen": "gte." + (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()} if days else {}
+    stories = db.select_all("stories", select="id,title,summary,title_source,event_date,first_seen,last_seen,article_count,status",
+                            status="in.(open,closed)", **recent)
+    return [s for s in stories if s["id"] in paired]
 
-    Only touches articles attached under an older rule and only those the current rule would have verified
-    (published > auto_attach_window_hours after the story began, or with a later event date).
+
+def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, max_checks: int = 6000,
+                report_path: str | None = None, days: int | None = 7) -> dict:
+    """Re-verify every member of the stories readers see (current pair, last 7 days) that was decided under an older
+    rule: detach confident follow-ups (the next assign files them) and record every kept member's display role.
+
     Detached articles get story_id = NULL / assigned_at = NULL and are picked up by run_assign.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     stats = {"stories": 0, "suspects": 0, "kept": 0, "detached": 0, "failed": 0}
     stats["reanchored"] = 0
-    stories = db.select("stories", select="id,title,summary,title_source,event_date,first_seen,last_seen,article_count",
-                        status="eq.open", article_count="gte.2")
-    work: list[tuple[dict, dict]] = []
+    stories = [s for s in _visible_stories(db, days) if int(s.get("article_count") or 0) >= 2]
+    work: list[tuple[dict, dict, list[dict]]] = []
     reanchored: list[str] = []
     for story in stories:
         members = db.select("articles_v3", select=RECHECK_SELECT, story_id=f"eq.{story['id']}")
@@ -431,25 +497,29 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
         suspects = recheck_suspects(members, story, settings, anchor_id=founder["id"] if founder else None)
         if suspects:
             stats["stories"] += 1
-            work.extend((m, story) for m in suspects)
+            work.extend((m, story, members) for m in suspects)
     work = work[:max_checks]
     stats["suspects"] = len(work)
     print(f"[recheck] re-anchored {stats['reanchored']} story summaries on their founding article"
           f"{' (in memory only)' if dry_run else ''}; e.g. old title -> anchored placeholder:")
     if reanchored:
         print("\n".join(reanchored))
-    print(f"[recheck] {stats['suspects']} articles in {stats['stories']} stories need re-verification under rule {ASSIGN_RULE}")
+    print(f"[recheck] {stats['suspects']} articles in {stats['stories']} visible stories need re-verification under rule {ASSIGN_RULE}")
 
-    def check(item: tuple[dict, dict]) -> tuple[dict, dict, dict | None, dict]:
-        article, story = item
-        chosen, out = verify_candidates(llm, settings, article, [story], keep_id=story["id"])
+    def check(item: tuple[dict, dict, list[dict]]) -> tuple[dict, dict, dict | None, dict]:
+        article, story, members = item
+        # the story as it would look without this article: its own headline must not vouch for itself
+        context = {story["id"]: context_from_members([m for m in members if m["id"] != article["id"]])}
+        chosen, out = verify_candidates(llm, settings, article, [story], keep_id=story["id"], context=context)
         return article, story, chosen, out
 
     touched: set[str] = set()
     samples: list[str] = []
     report_rows: list[list[str]] = []
     candidates_to_split: list[tuple[float, str]] = []  # every follow_up/unrelated answer, whatever its confidence
-    with ThreadPoolExecutor(max_workers=settings.enrich_concurrency) as pool:
+    roles: dict[str, int] = {}
+    # a few thousand calls: 12 at a time keeps the real run inside the 90-minute Actions limit
+    with ThreadPoolExecutor(max_workers=max(settings.enrich_concurrency, 12)) as pool:
         for future in [pool.submit(check, item) for item in work]:
             try:
                 article, story, chosen, out = future.result()
@@ -465,15 +535,18 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
             report_rows.append([story["id"], story.get("_old_title") or story["title"], story["title"],
                                 article["id"], article.get("outlet") or "", article.get("published_at") or "",
                                 article.get("title") or "", relation or "", f"{confidence:.2f}",
-                                "kept" if chosen is not None else "detached", (out.get("reason") or "").replace("\t", " ")])
+                                "kept" if chosen is not None else "detached", chosen.get("_role", "") if chosen else "",
+                                (out.get("reason") or "").replace("\t", " ")])
             if relation in ("follow_up", "unrelated"):
                 candidates_to_split.append((confidence, f"[{relation} {confidence:.2f}] [{story['title'][:50]}] -> "
                                                         f"{article.get('outlet')}: {article.get('title', '')[:80]}"))
             if chosen is not None:
                 stats["kept"] += 1
+                roles[chosen["_role"]] = roles.get(chosen["_role"], 0) + 1
                 if not dry_run:
                     db.update("articles_v3", {"id": f"eq.{article['id']}"},
-                              {"assignment": {**(article.get("assignment") or {}), "rule": ASSIGN_RULE, "rechecked": True}})
+                              {"assignment": {**(article.get("assignment") or {}), "rule": ASSIGN_RULE, "rechecked": True,
+                                              "role": chosen["_role"], "verifier": out}})
                 continue
             stats["detached"] += 1
             if len(samples) < 40:
@@ -489,13 +562,15 @@ def run_recheck(db: Db, llm: LLM, settings: Settings, *, dry_run: bool = False, 
         for story_id in touched:
             db.rpc("refresh_story_stats", {"target": story_id})
     mode = " (dry run: nothing written)" if dry_run else ""
-    print(f"[recheck]{mode} kept={stats['kept']} detached={stats['detached']} failed={stats['failed']}")
+    stats["roles"] = roles
+    print(f"[recheck]{mode} kept={stats['kept']} detached={stats['detached']} failed={stats['failed']} | kept by role: "
+          + (" ".join(f"{r}={roles.get(r, 0)}" for r in ROLES)))
     if report_path:
         import csv
         with open(report_path, "w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh, delimiter="\t")
             w.writerow(["story_id", "story_title_before", "story_anchor", "article_id", "outlet", "published_at",
-                        "headline", "relation", "confidence", "decision", "reason"])
+                        "headline", "relation", "confidence", "decision", "role", "reason"])
             w.writerows(sorted(report_rows, key=lambda r: (r[1], r[5])))
         print(f"[recheck] wrote {len(report_rows)} decisions to {report_path} (verify model: {settings.verify_model})")
     if candidates_to_split:

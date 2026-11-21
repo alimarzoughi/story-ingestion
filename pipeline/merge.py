@@ -29,18 +29,24 @@ MERGE_SCHEMA = {
 
 MERGE_SYSTEM = """You decide whether two story clusters from a news comparison app are the SAME story and should be merged.
 A story is ONE specific development: a single concrete event, action or announcement (e.g. 'Trump bans CNN, MS NOW and Politico from the White House'), never a broad topic or ongoing saga ('Trump vs the press').
-Each cluster is given as a title, a summary and sample headlines. They are the SAME story when their main development is the same: coverage of it, reactions to it and analysis of it all belong together.
-They are DIFFERENT when one is a follow-up development of the other (a lawsuit over an action, a court ruling, a retaliation, a resignation, a vote on a response), even though they share the same people and one recaps the other.
+Each cluster is given as a title, a summary and sample headlines (earliest, latest and least typical). They are the SAME story when their main development is the same: coverage of it, reactions to it and analysis of it all belong together.
+They are DIFFERENT when one is a follow-up development of the other (a lawsuit over an action, a court ruling, a retaliation, a resignation, a vote on a response, a new revelation, a company's results), even though they share the same people and one recaps the other. Judge each cluster by its title, summary and earliest headlines; a few later headlines about the other cluster's development do not make them the same.
 If unsure, answer false. Return only JSON."""
 
 STORY_SELECT = "id,title,summary,event_date,first_seen,last_seen,article_count,status"
 
 
 def split_between(db: Db, a_id: str, b_id: str) -> bool:
-    """True if either story holds an article that recheck/assign split off from the other one. Such a pair is a
-    story and its follow-up by an earlier decision; merging would silently undo that split."""
+    """True if the two stories were kept apart by an earlier decision: either holds an article that recheck/assign
+    split off from the other, or was founded by an article the verifier judged a follow-up of the other (the Nvidia
+    earnings story, founded as a follow-up of "board won't reinstate Huang", was merged back into it on 2026-11-18).
+    Merging would silently undo that decision."""
     for here, other in ((a_id, b_id), (b_id, a_id)):
         if db.select("articles_v3", select="id", story_id=f"eq.{here}", **{"assignment->>split_from": f"eq.{other}"}, limit="1"):
+            return True
+        if db.select("articles_v3", select="id", story_id=f"eq.{here}", limit="1", **{
+                "assignment->>method": "eq.create", "assignment->verifier->>candidate_id": f"eq.{other}",
+                "assignment->verifier->>relation": "eq.follow_up"}):
             return True
     return False
 
@@ -62,11 +68,27 @@ def survivor_of(a: dict, b: dict) -> tuple[dict, dict]:
     return (a, b) if key(a) >= key(b) else (b, a)
 
 
+def sample_headlines(story_id: str, members: list[dict]) -> list[dict]:
+    """Earliest 3, latest 3 and the 2 least typical members (lowest similarity to the story when they were filed).
+    The earliest six alone hid what a story had grown into: by Nov 18 "board won't reinstate Huang" was half
+    earnings coverage, and the merge check never saw it."""
+    ordered = sorted(members, key=lambda m: m["published_at"])
+    picked = ordered[:3] + [m for m in ordered[-3:] if m not in ordered[:3]]
+
+    def filed_sim(m: dict) -> float:
+        own = next((c for c in (m.get("assignment") or {}).get("candidates") or [] if c.get("id") == story_id), None)
+        return float(own["sim"]) if own and "sim" in own else 1.0
+
+    atypical = sorted((m for m in ordered if m not in picked), key=filed_sim)[:2]
+    return picked + [m for m in atypical if filed_sim(m) < 1.0]
+
+
 def _describe(db: Db, story: dict) -> str:
-    heads = db.select("articles_v3", select="outlet,title", story_id=f"eq.{story['id']}", order="published_at.asc", limit="6")
-    lines = "\n".join(f"    - {h['outlet']}: {h['title']}" for h in heads)
+    members = db.select("articles_v3", select="outlet,title,headline,published_at,assignment", story_id=f"eq.{story['id']}")
+    lines = "\n".join(f"    - {h['outlet']}: {h.get('headline') or h['title']}" for h in sample_headlines(story["id"], members))
     return (f"title: {story['title']}\n  summary: {story['summary']}\n  event_date: {story.get('event_date')}, "
-            f"first reported: {story.get('first_seen')}\n  sample headlines:\n{lines}")
+            f"first reported: {story.get('first_seen')}, articles: {story.get('article_count')}\n"
+            f"  sample headlines (earliest, latest, least typical):\n{lines}")
 
 
 def run_merge(db: Db, llm: LLM | None, settings: Settings) -> dict:
@@ -115,6 +137,9 @@ def run_merge(db: Db, llm: LLM | None, settings: Settings) -> dict:
             continue
         keep, drop = survivor_of(a, b)
         moved = db.rpc("merge_stories", {"survivor": keep["id"], "absorbed": drop["id"]}) or 0
+        db.update("stories", {"id": f"eq.{drop['id']}"}, {"merge_check": {
+            "survivor": keep["id"], "similarity": float(row["similarity"]), "verifier": out,
+            "model": settings.verify_model, "at": datetime.now(timezone.utc).isoformat()}})
         absorbed_into[drop["id"]] = keep["id"]
         stats["merged"] += 1
         stats["moved"] += int(moved)
