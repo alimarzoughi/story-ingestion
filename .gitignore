@@ -23,17 +23,6 @@ build/
 .idea/
 .vscode/
 
-# tool caches
-.codex-pycache/
-
-# local scratch
+# local
 *.log
 local/
-.agents/
-
-# laptop-only evaluation files (gold labels, scoring script): live in local/eval/
-eval/
-
-# private operating docs
-AGENTS.md
-*.sql
